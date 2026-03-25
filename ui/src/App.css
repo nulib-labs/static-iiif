@@ -1,0 +1,140 @@
+:root {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.5;
+  color: #0f172a;
+  background-color: #f8fafc;
+}
+
+body {
+  margin: 0;
+  background: #f8fafc;
+}
+
+main.layout {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.layout-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.status {
+  font-size: 0.9rem;
+  color: #0369a1;
+}
+
+.status--error {
+  color: #b91c1c;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.panel {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 10px 15px -10px rgba(15, 23, 42, 0.25);
+}
+
+.panel header {
+  margin-bottom: 8px;
+}
+
+.panel-body {
+  max-height: 320px;
+  overflow: auto;
+  font-size: 0.95rem;
+}
+
+.tree-node summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.tree-children {
+  margin-left: 16px;
+  border-left: 1px dashed #cbd5f5;
+  padding-left: 12px;
+}
+
+.tree-file {
+  display: flex;
+  margin: 2px 0;
+}
+
+.tree-file button {
+  border: none;
+  background: none;
+  color: #0f172a;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.tree-file button:hover {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.tree-file--info button {
+  font-weight: 600;
+}
+
+.tree-empty {
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.viewer-panel {
+  min-height: 420px;
+}
+
+.viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.viewer-header h2 {
+  margin: 0;
+}
+
+.viewer-stage {
+  min-height: 320px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.viewer-stage canvas,
+.viewer-stage .openseadragon-canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.viewer-placeholder {
+  text-align: center;
+  color: #94a3b8;
+  padding: 40px 0;
+}
+
+.viewer-meta {
+  font-size: 0.9rem;
+  color: #475569;
+}
+
+button {
+  font-family: inherit;
+}
