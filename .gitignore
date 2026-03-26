@@ -1,3 +1,4 @@
 node_modules
 output
 .aws-sam
+.DS_Store

@@ -1,21 +1,51 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-The project is a lightweight Node.js package: `package.json` defines scripts and metadata, while all logic lives in `app/`. Use `app/image/` for IIIF tiling helpers (current entry point is `index.js`) and treat `app/presentation/` as the workspace for manifests or viewers. Keep supportive assets (sample manifests, templates) inside the relevant module folder, leave a short README for new directories, and store master assets or data drops under `source/` so static builds can read them predictably.
+## Project Overview
+This project generates static IIIF Image 3.0 API resources and IIIF Presentation 3.0 manifests for a collection of images. It supports two deployment paths that share a common UI (`/ui`):
+
+**Local / GitHub Actions path** — A file watcher (`app/start.js`) monitors `source/image/` and invokes `app/local/image/index.js` to produce Level 0 IIIF static image tiles written directly to `output/image/`. No cloud storage or storage abstraction is involved; files go straight to the local filesystem.
+
+**AWS path** — A SAM application (`template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (to be added to this repo). Deployment config lives in `samconfig.toml`.
+
+Both paths will eventually consume a CSV of collection metadata to generate IIIF Presentation 3.0 manifests that reference the IIIF image URLs.
+
+## Project Structure
+```
+app/
+  local/
+    image/        # Level 0 tile generator; writes to output/image/ directly
+  aws/
+    lambdas/
+      iiif-image/ # Lambda: converts source images to pyramid TIFs (Level 2)
+  start.js        # File watcher — entry point for local/GH Actions path
+source/
+  image/          # Drop master images here (TIFF, JPEG, PNG, WebP)
+output/
+  image/          # Generated Level 0 tiles and info.json files (local path)
+ui/               # React/Vite frontend; works against local output or deployed AWS
+template.yml      # SAM template (AWS path)
+samconfig.toml    # SAM deployment config (gitignored — copy from samconfig.toml.example)
+```
+
+> Note: `app/storage/` is a vestige of an earlier approach and is not used by `app/local/image/index.js`. Do not wire the local image pipeline through the storage abstraction.
 
 ## Build, Test, and Development Commands
-- `npm install` — install dependencies; rerun after updating `package.json`.
-- `node app/image/index.js` — process the default sample in `source/image/debois.tif`; extend it to accept flags when you need new identifiers.
-- `npm start` — run the source watcher that observes `source/*` and hands new files to `app/image/index.js`, ensuring fresh tiles and `info.json` documents land under the mirrored `output/*` tree.
-- Set `STORAGE_DRIVER=s3` along with `S3_BUCKET`, `S3_PREFIX`, and `AWS_REGION` to stream tiles directly to S3 (default driver writes under `output/`).
-- `npm test` — currently a placeholder; replace with your actual test runner command as you add coverage so CI/CD hooks remain consistent.
-Stick with Node 18+ so the built-in test runner and modern syntax are available.
+- `npm install` — install root dependencies; run inside `ui/` and any Lambda subdirectory separately.
+- `node app/local/image/index.js` — process a single image manually (reads `source/image/debois.tif` by default).
+- `npm start` — start the file watcher; processes any images already in `source/image/` then watches for new ones.
+- `IIIF_BASE_URL=https://example.com npm start` — set the base URL used in `info.json` `id` fields.
+- `npm test` — placeholder; replace with your actual test runner as coverage is added.
+- `sam build && sam deploy` — build and deploy the AWS stack (requires `samconfig.toml`).
+- `cd ui && npm run dev` — start the Vite dev server for the frontend.
+
+## Environment / Feature Flags
+The UI and any shared code must determine which backend is active. Use an environment variable (e.g. `VITE_BACKEND=local|aws`) so Vite can expose it at build time. Local development defaults to `local`; CI/CD targeting AWS sets `aws` and provides the relevant bucket/endpoint config.
 
 ## Coding Style & Naming Conventions
-Use CommonJS modules (`require`/`module.exports`) and 2-space indentation to match the existing source file. Prefer descriptive, dashed directory names (`image-ops`, `manifest-tools`) and camelCase identifiers inside code. Strings should default to double quotes, and asynchronous work should rely on `async`/`await`. Configure a formatter such as Prettier once adopted, and run `npx prettier --check "app/**/*.js"` before opening a pull request.
+Use CommonJS modules (`require`/`module.exports`) and 2-space indentation in all Node.js code under `app/`. The UI (`/ui`) uses ESM and JSX. Prefer descriptive, dashed directory names and camelCase identifiers. Strings default to double quotes; async work uses `async`/`await`.
 
 ## Testing Guidelines
-Add tests alongside the code under `app/**/__tests__/` with filenames ending in `.test.js`. Node's native runner (`node --test`) is sufficient; once implemented, wire it into `npm test`. Keep fixtures small (store them under `app/<module>/__fixtures__`) and document unusual assumptions. A pull request should not remove coverage without explaining the trade-off, and any new tiler or presentation feature should include at least a smoke test and validation against a sample IIIF manifest.
+Add tests alongside code under `app/**/__tests__/` with filenames ending in `.test.js`. Use Node's native runner (`node --test`); wire it into `npm test` once implemented. Keep fixtures small under `app/<module>/__fixtures__`. Any new tiling or presentation feature should include at least a smoke test and validation against a sample IIIF document.
 
 ## Commit & Pull Request Guidelines
-The repository has no prior history, so adopt Conventional Commits immediately (for example, `feat: add jp2 tiling pipeline`) to keep the log machine-readable. Reference related GitHub issues in the body, describe visible changes, and attach screenshots or manifest snippets when you modify presentation assets. Every PR must list manual verification steps (`npm test`, sample render) so reviewers can reproduce results quickly. Keep PRs focused; split unrelated work into separate branches for faster reviews.
+Use Conventional Commits (`feat:`, `fix:`, `chore:`, etc.) from the start. Reference related GitHub issues in the PR body. Include manual verification steps (`npm test`, sample render) so reviewers can reproduce. Keep PRs focused; split unrelated work into separate branches.
