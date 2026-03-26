@@ -63,7 +63,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-iiif-image"
-      CodeUri: src/lambdas/iiif-image/
+      CodeUri: app/aws/lambdas/iiif-image/
       Handler: index.handler
       Policies:
         - Statement:
