@@ -2,7 +2,6 @@ const fs = require("fs/promises");
 const path = require("path");
 const pathPosix = path.posix;
 const sharp = require("sharp");
-const {createStorage} = require("../storage");
 
 function normalizeFormat(format) {
   const normalized = (format || "jpg").toLowerCase();
@@ -27,16 +26,15 @@ function ensurePositiveInt(value) {
   return parsed;
 }
 
-const formatContentTypes = {
-  jpeg: "image/jpeg",
-  png: "image/png",
-  webp: "image/webp",
-  tiff: "image/tiff",
-};
+async function writeFile(outputRoot, posixKey, buffer) {
+  const filePath = path.join(outputRoot, ...posixKey.split("/"));
+  await fs.mkdir(path.dirname(filePath), {recursive: true});
+  await fs.writeFile(filePath, buffer);
+}
 
 async function createIiifTiles({
   sourceBuffer,
-  storage,
+  outputRoot,
   outputPrefix,
   tileWidth = 512,
   tileHeight = 512,
@@ -44,8 +42,6 @@ async function createIiifTiles({
   format = "jpg",
 }) {
   const normalizedFormat = normalizeFormat(format);
-  const contentType =
-    formatContentTypes[normalizedFormat] || "application/octet-stream";
   const {width, height} = await getImageSize(sourceBuffer);
   const summary = [];
 
@@ -93,7 +89,7 @@ async function createIiifTiles({
           .toFormat(normalizedFormat)
           .toBuffer();
 
-        await storage.writeBinary(tileKey, tileBuffer, contentType);
+        await writeFile(outputRoot, tileKey, tileBuffer);
       }
     }
 
@@ -113,7 +109,7 @@ async function writeInfoJson({
   serviceId,
   width,
   height,
-  storage,
+  outputRoot,
   outputPrefix,
   tileWidth,
   tileHeight,
@@ -152,7 +148,7 @@ async function writeInfoJson({
   };
 
   const infoKey = pathPosix.join(outputPrefix, "info.json");
-  await storage.writeJson(infoKey, payload);
+  await writeFile(outputRoot, infoKey, Buffer.from(JSON.stringify(payload, null, 2)));
   return infoKey;
 }
 
@@ -171,8 +167,6 @@ async function processImage({
   tileHeight = 512,
   scaleFactors = [1, 2, 4],
   format = "jpg",
-  storage,
-  storageOptions = {},
 }) {
   const normalizedSourceRoot = sourceRoot || path.dirname(sourcePath);
   const relativePath = path.relative(normalizedSourceRoot, sourcePath);
@@ -192,18 +186,10 @@ async function processImage({
     ? `${relativeDirPosix}/${identifier}`
     : identifier;
 
-  const activeStorage =
-    storage ||
-    createStorage({
-      outputRoot,
-      localRoot: outputRoot,
-      ...storageOptions,
-    });
-
   const sourceBuffer = await fs.readFile(sourcePath);
   const tileResult = await createIiifTiles({
     sourceBuffer,
-    storage: activeStorage,
+    outputRoot,
     outputPrefix,
     tileWidth,
     tileHeight,
@@ -222,17 +208,14 @@ async function processImage({
     serviceId,
     width: tileResult.width,
     height: tileResult.height,
-    storage: activeStorage,
+    outputRoot,
     outputPrefix,
     tileWidth,
     tileHeight,
     scaleFactors,
   });
 
-  const outputLocation =
-    activeStorage.kind === "local"
-      ? path.join(activeStorage.root, ...outputPrefix.split("/"))
-      : outputPrefix;
+  const outputLocation = path.join(outputRoot, ...outputPrefix.split("/"));
 
   return {
     identifier,
@@ -246,7 +229,7 @@ async function processImage({
 }
 
 async function main() {
-  const projectRoot = path.resolve(__dirname, "../..");
+  const projectRoot = path.resolve(__dirname, "../../..");
   const sourceRoot = path.join(projectRoot, "source");
   const outputRoot = path.join(projectRoot, "output");
   const sourcePath = path.join(sourceRoot, "image/debois.tif");

@@ -1,7 +1,7 @@
 const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
-const {processImage} = require("./image");
+const {processImage} = require("./local/image");
 
 const projectRoot = path.resolve(__dirname, "..");
 const sourceRoot = path.join(projectRoot, "source");
