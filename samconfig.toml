@@ -1,0 +1,12 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "kdid-iiif-collection-builder"
+resolve_s3 = true
+capabilities = "CAPABILITY_IAM"
+s3_prefix = "kdid-iiif-collection-builder"
+confirm_changeset = true
+image_repositories = []
+
+[default.global.parameters]
+region = "us-east-1"

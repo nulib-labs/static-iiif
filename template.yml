@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: IIIF Collection Builder
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Timeout: 300
+    MemorySize: 1025
+    Environment:
+      Variables: 
+        SOURCE_BUCKET: !Sub "${AWS::StackName}-source"
+        IIIF_BUCKET: !Sub "${AWS::StackName}-iiif"
+
+Resources:
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: IIIFImageFunctionS3Permission
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-source"
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: image/
+            Function: !GetAtt IIIFImageFunction.Arn
+
+  IIIFBucket:
+    Type: AWS::S3::Bucket 
+    Properties: 
+      BucketName: !Sub "${AWS::StackName}-iiif"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      WebsiteConfiguration:
+        IndexDocument: index.html
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+            AllowedOrigins:
+              - "*"
+
+  IIIFBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref IIIFBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/*"
+
+  IIIFImageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-iiif-image"
+      CodeUri: src/lambdas/iiif-image/
+      Handler: index.handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-source/*"
+        - S3WritePolicy:
+            BucketName: !Sub "${AWS::StackName}-iiif"
+
+  IIIFImageFunctionS3Permission:
+    Type: AWS::Lambda::Permission
+    DependsOn: IIIFImageFunction
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref IIIFImageFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::${AWS::StackName}-source"
+
+Outputs:
+  SourceBucketName:
+    Value: !Sub "${AWS::StackName}-source"
+  IIIFBucketName:
+    Value: !Sub "${AWS::StackName}-iiif"
+  IIIFImageFunctionArn:
+    Value: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-iiif-image"

@@ -1,0 +1,10 @@
+{
+  "name": "iiif-image",
+  "version": "1.0.0",
+  "description": "IIIF image Lambda function",
+  "main": "index.js",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.0.0",
+    "sharp": "^0.33.5"
+  }
+}
