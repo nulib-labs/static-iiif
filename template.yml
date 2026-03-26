@@ -2,6 +2,11 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: IIIF Collection Builder
 
+Parameters:
+  ServerlessIiifVersion:
+    Type: String
+    Default: "7.0.1"
+
 Globals:
   Function:
     Runtime: nodejs22.x
@@ -83,6 +88,15 @@ Resources:
       Principal: s3.amazonaws.com
       SourceArn: !Sub "arn:aws:s3:::${AWS::StackName}-source"
 
+  IiifServer:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location:
+        ApplicationId: arn:aws:serverlessrepo:us-east-1:625046682746:applications/serverless-iiif
+        SemanticVersion: !Ref ServerlessIiifVersion
+      Parameters:
+        SourceBucket: !Ref IIIFBucket
+
 Outputs:
   SourceBucketName:
     Value: !Sub "${AWS::StackName}-source"
@@ -90,3 +104,5 @@ Outputs:
     Value: !Sub "${AWS::StackName}-iiif"
   IIIFImageFunctionArn:
     Value: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-iiif-image"
+  IiifEndpoint:
+    Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
