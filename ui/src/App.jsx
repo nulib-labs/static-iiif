@@ -209,7 +209,7 @@ export default function App() {
           <p>
             Dimensions: {selectedInfo.data.width} × {selectedInfo.data.height}px
           </p>
-          <p>Profile: {selectedInfo.data.profile}</p>
+          <p>Profile: {Array.isArray(selectedInfo.data.profile) ? selectedInfo.data.profile[0] : selectedInfo.data.profile}</p>
         </div>
       </div>
     );
