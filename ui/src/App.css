@@ -58,43 +58,68 @@ main.layout {
   font-size: 0.95rem;
 }
 
-.tree-node summary {
-  cursor: pointer;
-  font-weight: 600;
+.tree-dir {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+  padding: 8px 0 4px;
 }
 
 .tree-children {
-  margin-left: 16px;
-  border-left: 1px dashed #cbd5f5;
-  padding-left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tree-node > .tree-children {
+  gap: 8px;
 }
 
 .tree-file {
   display: flex;
-  margin: 2px 0;
 }
 
 .tree-file button {
-  border: none;
-  background: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
   color: #0f172a;
   text-align: left;
-  padding: 0;
+  padding: 6px 10px;
   cursor: pointer;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.tree-file button::before {
+  content: "▸";
+  color: #94a3b8;
+  flex-shrink: 0;
 }
 
 .tree-file button:hover {
-  color: #2563eb;
-  text-decoration: underline;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+
+.tree-file button:hover::before {
+  color: #1d4ed8;
 }
 
 .tree-file--info button {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .tree-empty {
   color: #94a3b8;
   font-style: italic;
+  font-size: 0.9rem;
 }
 
 .viewer-panel {
@@ -133,6 +158,33 @@ main.layout {
 .viewer-meta {
   font-size: 0.9rem;
   color: #475569;
+}
+
+.url-form {
+  display: flex;
+  gap: 8px;
+}
+
+.url-input {
+  flex: 1;
+  font-family: monospace;
+  font-size: 0.9rem;
+  padding: 6px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  min-width: 0;
+}
+
+.url-form button {
+  padding: 6px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  background: #f1f5f9;
+  cursor: pointer;
+}
+
+.url-form button:hover {
+  background: #e2e8f0;
 }
 
 button {

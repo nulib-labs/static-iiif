@@ -40,7 +40,17 @@ ui/               # React/Vite frontend; works against local output or deployed 
 - `cd ui && npm run dev` — start the Vite dev server for the frontend.
 
 ## Environment / Feature Flags
-The UI and any shared code must determine which backend is active. Use an environment variable (e.g. `VITE_BACKEND=local|aws`) so Vite can expose it at build time. Local development defaults to `local`; CI/CD targeting AWS sets `aws` and provides the relevant bucket/endpoint config.
+
+### UI (`ui/`)
+| Variable | Values | Description |
+|---|---|---|
+| `VITE_BACKEND` | `local` (default), `aws` | Switches UI between local file-browse mode and AWS mode |
+| `VITE_IIIF_BASE_URL` | e.g. `https://abc.cloudfront.net/iiif/2` | serverless-iiif endpoint; pre-populates the URL input in aws mode. Copy from `IiifEndpoint` stack output after `sam deploy`. |
+
+In `aws` mode the tree panels are replaced by a URL input pre-filled with `VITE_IIIF_BASE_URL`. Append the identifier (e.g. `image%2Fdebois`) and click Preview.
+
+### Amplify deployment
+Connect the repo in Amplify. The `amplify.yml` at the repo root handles the build (`ui/` subdirectory, outputs `ui/dist`). Set `VITE_BACKEND=aws` and `VITE_IIIF_BASE_URL` in the Amplify environment variables console.
 
 ## Coding Style & Naming Conventions
 Use CommonJS modules (`require`/`module.exports`) and 2-space indentation in all Node.js code under `app/`. The UI (`/ui`) uses ESM and JSX. Prefer descriptive, dashed directory names and camelCase identifiers. Strings default to double quotes; async work uses `async`/`await`.

@@ -3,17 +3,51 @@ import Image from "@samvera/clover-iiif/image";
 import "./App.css";
 import {trimTileChildren} from "./utils/tree";
 
+const BACKEND = import.meta.env.VITE_BACKEND || "local";
+const IIIF_BASE_URL = (import.meta.env.VITE_IIIF_BASE_URL || "").replace(/\/$/, "");
+
 const DIRECTORY_TYPES = [
   {key: "source", label: "Source Directory"},
   {key: "output", label: "Output Directory"},
 ];
 
+function AwsImageLookup({onSelect}) {
+  const [value, setValue] = useState(IIIF_BASE_URL ? `${IIIF_BASE_URL}/` : "");
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const url = value.trim().replace(/\/info\.json$/, "").replace(/\/$/, "");
+    if (url) onSelect(url);
+  }
+
+  return (
+    <section className="panel">
+      <header>
+        <h2>IIIF Image URL</h2>
+      </header>
+      <div className="panel-body">
+        <form onSubmit={handleSubmit} className="url-form">
+          <input
+            type="text"
+            className="url-input"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="https://…/iiif/2/image%2Fidentifier"
+            spellCheck={false}
+          />
+          <button type="submit">Preview</button>
+        </form>
+      </div>
+    </section>
+  );
+}
+
 function TreeNode({node, onSelectInfo}) {
   if (!node) return null;
   if (node.type === "directory") {
     return (
-      <details open className="tree-node">
-        <summary>{node.name || "root"}</summary>
+      <div className="tree-node">
+        {node.name && <div className="tree-dir">{node.name}</div>}
         <div className="tree-children">
           {node.children && node.children.length > 0 ? (
             node.children.map((child) => (
@@ -27,7 +61,7 @@ function TreeNode({node, onSelectInfo}) {
             <span className="tree-empty">(empty)</span>
           )}
         </div>
-      </details>
+      </div>
     );
   }
 
@@ -78,6 +112,10 @@ export default function App() {
   const [viewerError, setViewerError] = useState(null);
 
   useEffect(() => {
+    if (BACKEND === "aws") {
+      setLoading(false);
+      return;
+    }
     async function fetchTrees() {
       setLoading(true);
       setError(null);
@@ -132,6 +170,20 @@ export default function App() {
     fetchInfo(selectedInfoPath);
   }, [selectedInfoPath]);
 
+  function handleAwsSelect(serviceUrl) {
+    setViewerError(null);
+    fetch(`${serviceUrl}/info.json`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Unable to load info.json from ${serviceUrl}`);
+        return res.json();
+      })
+      .then((data) => setSelectedInfo({data: {...data, id: serviceUrl}, infoUrl: `${serviceUrl}/info.json`, serviceUrl}))
+      .catch((err) => {
+        setViewerError(err.message);
+        setSelectedInfo(null);
+      });
+  }
+
   const viewer = useMemo(() => {
     if (!selectedInfo) return null;
     return (
@@ -174,22 +226,28 @@ export default function App() {
         {loading && <span className="status">Loading directories…</span>}
         {error && <span className="status status--error">{error}</span>}
       </header>
-      <div className="columns">
-        {DIRECTORY_TYPES.map(({key, label}) => (
-          <DirectoryPanel
-            key={key}
-            title={label}
-            tree={trees[key]}
-            onSelectInfo={key === "output" ? setSelectedInfoPath : undefined}
-          />
-        ))}
-      </div>
+      {BACKEND === "aws" ? (
+        <AwsImageLookup onSelect={handleAwsSelect} />
+      ) : (
+        <div className="columns">
+          {DIRECTORY_TYPES.map(({key, label}) => (
+            <DirectoryPanel
+              key={key}
+              title={label}
+              tree={trees[key]}
+              onSelectInfo={key === "output" ? setSelectedInfoPath : undefined}
+            />
+          ))}
+        </div>
+      )}
       <section className="panel viewer-panel">
         {selectedInfo ? (
           viewer
         ) : (
           <div className="viewer-placeholder">
-            Select an `info.json` in the output tree to preview.
+            {BACKEND === "aws"
+              ? "Enter a IIIF image URL above to preview."
+              : "Select an `info.json` in the output tree to preview."}
           </div>
         )}
         {viewerError && (
