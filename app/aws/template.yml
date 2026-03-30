@@ -10,6 +10,8 @@ Parameters:
 Globals:
   Function:
     Runtime: nodejs22.x
+    Architectures:
+      - arm64
     Timeout: 300
     MemorySize: 1025
     Environment:
@@ -68,7 +70,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-iiif-image"
-      CodeUri: app/aws/lambdas/iiif-image/
+      CodeUri: lambdas/iiif-image/
       Handler: index.handler
       Policies:
         - Statement:
