@@ -6,7 +6,7 @@ const {processImage} = require("./local/image");
 const projectRoot = path.resolve(__dirname, "..");
 const sourceRoot = path.join(projectRoot, "source");
 const outputRoot = path.join(projectRoot, "output");
-const baseUrl = process.env.IIIF_BASE_URL;
+const baseUrl = process.env.IIIF_BASE_URL || "http://localhost:5173/iiif/output";
 const supportedExtensions = new Set([
   ".tif",
   ".tiff",
