@@ -5,7 +5,7 @@ This project generates static IIIF Image 3.0 API resources and IIIF Presentation
 
 **Local / GitHub Actions path** — A file watcher (`app/start.js`) monitors `source/image/` and invokes `app/local/image/index.js` to produce Level 0 IIIF static image tiles written directly to `output/image/`. No cloud storage or storage abstraction is involved; files go straight to the local filesystem.
 
-**AWS path** — A SAM application (`template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (to be added to this repo). Deployment config lives in `samconfig.toml`.
+**AWS path** — A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (to be added to this repo). Deployment config lives in `app/aws/samconfig.toml`.
 
 Both paths will eventually consume a CSV of collection metadata to generate IIIF Presentation 3.0 manifests that reference the IIIF image URLs.
 
@@ -15,6 +15,9 @@ app/
   local/
     image/        # Level 0 tile generator; writes to output/image/ directly
   aws/
+    template.yml          # SAM template (AWS path)
+    samconfig.toml        # SAM deployment config (gitignored — copy from samconfig.toml.example)
+    samconfig.toml.example
     lambdas/
       iiif-image/ # Lambda: converts source images to pyramid TIFs (Level 2)
   start.js        # File watcher — entry point for local/GH Actions path
@@ -23,8 +26,6 @@ source/
 output/
   image/          # Generated Level 0 tiles and info.json files (local path)
 ui/               # React/Vite frontend; works against local output or deployed AWS
-template.yml      # SAM template (AWS path)
-samconfig.toml    # SAM deployment config (gitignored — copy from samconfig.toml.example)
 ```
 
 > Note: `app/storage/` is a vestige of an earlier approach and is not used by `app/local/image/index.js`. Do not wire the local image pipeline through the storage abstraction.
@@ -35,7 +36,7 @@ samconfig.toml    # SAM deployment config (gitignored — copy from samconfig.to
 - `npm start` — start the file watcher; processes any images already in `source/image/` then watches for new ones.
 - `IIIF_BASE_URL=https://example.com npm start` — set the base URL used in `info.json` `id` fields.
 - `npm test` — placeholder; replace with your actual test runner as coverage is added.
-- `sam build && sam deploy` — build and deploy the AWS stack (requires `samconfig.toml`).
+- `cd app/aws && sam build --use-container && sam deploy` — build and deploy the AWS stack. Docker must be running; `--use-container` is required so SAM installs native dependencies (e.g. sharp) inside a Linux arm64 container matching the Lambda runtime. Requires `app/aws/samconfig.toml`.
 - `cd ui && npm run dev` — start the Vite dev server for the frontend.
 
 ## Environment / Feature Flags
