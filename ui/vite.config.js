@@ -135,6 +135,10 @@ function directoryApiPlugin() {
 
 export default defineConfig({
   plugins: [directoryApiPlugin(), react()],
+  define: {
+    'import.meta.env.VITE_BACKEND': JSON.stringify(process.env.VITE_BACKEND || 'local'),
+    'import.meta.env.VITE_IIIF_BASE_URL': JSON.stringify(process.env.VITE_IIIF_BASE_URL || ''),
+  },
   server: {
     fs: {
       allow: [projectRoot],

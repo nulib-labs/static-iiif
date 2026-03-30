@@ -218,7 +218,7 @@ export default function App() {
   return (
     <main className="layout">
       <header className="layout-header">
-        <h1>Static IIIF Dashboard</h1>
+        <h1>Static IIIF Dashboard**</h1>
         <p>
           Browse input/output directories and preview generated Image API
           services.

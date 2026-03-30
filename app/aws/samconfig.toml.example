@@ -4,4 +4,10 @@ version = 0.1
 stack_name = "my-dev-iiif-tiler"
 resolve_s3 = true
 region = "us-east-1"
-capabilities = "CAPABILITY_IAM"
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+
+# GitHub repo URL — the URL of your GitHub fork of this repository
+# GitHub personal access token — needs "repo" scope
+#   Generate one at: https://github.com/settings/tokens → Generate new token (classic) → check "repo"
+# GitHub branch to deploy (default: main)
+parameter_overrides = "GitHubRepo=https://github.com/your-org/your-repo GitHubOAuthToken=ghp_your_token_here GitHubBranch=main"

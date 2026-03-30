@@ -6,6 +6,16 @@ Parameters:
   ServerlessIiifVersion:
     Type: String
     Default: "7.0.1"
+  GitHubRepo:
+    Type: String
+    Description: "URL of your GitHub fork of this repo (e.g. https://github.com/your-org/static-iiif)"
+  GitHubBranch:
+    Type: String
+    Default: main
+  GitHubOAuthToken:
+    Type: String
+    NoEcho: true
+    Description: "GitHub personal access token with repo scope (https://github.com/settings/tokens)"
 
 Globals:
   Function:
@@ -90,6 +100,44 @@ Resources:
       Principal: s3.amazonaws.com
       SourceArn: !Sub "arn:aws:s3:::${AWS::StackName}-source"
 
+  AmplifyApp:
+    Type: AWS::Amplify::App
+    Properties:
+      Name: !Sub "${AWS::StackName}-ui"
+      Repository: !Ref GitHubRepo
+      OauthToken: !Ref GitHubOAuthToken
+      BuildSpec: |
+        version: 1
+        frontend:
+          phases:
+            preBuild:
+              commands:
+                - npm ci --prefix ui
+            build:
+              commands:
+                - echo "VITE_BACKEND=$VITE_BACKEND VITE_IIIF_BASE_URL=$VITE_IIIF_BASE_URL"
+                - printf 'VITE_BACKEND=aws\nVITE_IIIF_BASE_URL=%s\n' "$VITE_IIIF_BASE_URL" > ui/.env.production
+                - npm run build --prefix ui
+          artifacts:
+            baseDirectory: ui/dist
+            files:
+              - '**/*'
+          cache:
+            paths:
+              - ui/node_modules/**/*
+      EnvironmentVariables:
+        - Name: VITE_BACKEND
+          Value: aws
+        - Name: VITE_IIIF_BASE_URL
+          Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
+
+  AmplifyBranch:
+    Type: AWS::Amplify::Branch
+    Properties:
+      AppId: !GetAtt AmplifyApp.AppId
+      BranchName: !Ref GitHubBranch
+      EnableAutoBuild: true
+
   IiifServer:
     Type: AWS::Serverless::Application
     Properties:
@@ -108,3 +156,5 @@ Outputs:
     Value: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-iiif-image"
   IiifEndpoint:
     Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
+  UIEndpoint:
+    Value: !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
