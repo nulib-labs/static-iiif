@@ -1,10 +1,38 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
+import {Amplify} from "aws-amplify";
+import {StorageBrowser} from "@aws-amplify/ui-react-storage";
 import Image from "@samvera/clover-iiif/image";
+import "@aws-amplify/ui-react/styles.css";
+import "@aws-amplify/ui-react-storage/styles.css";
 import "./App.css";
 import {trimTileChildren} from "./utils/tree";
 
 const BACKEND = import.meta.env.VITE_BACKEND || "local";
 const IIIF_BASE_URL = (import.meta.env.VITE_IIIF_BASE_URL || "").replace(/\/$/, "");
+const REMOTE_MANIFEST_API_BASE = (import.meta.env.VITE_MANIFEST_API_URL || "").replace(/\/$/, "");
+const STORAGE_BUCKET = import.meta.env.VITE_STORAGE_BUCKET || "";
+const STORAGE_REGION = import.meta.env.VITE_STORAGE_REGION || import.meta.env.VITE_AWS_REGION || "";
+const STORAGE_IDENTITY_POOL_ID = import.meta.env.VITE_STORAGE_IDENTITY_POOL_ID || "";
+const LOCAL_MANIFEST_API_BASE = "/api/manifests";
+let amplifyConfigured = false;
+
+function configureAmplifyStorage() {
+  if (amplifyConfigured) return;
+  if (STORAGE_BUCKET && STORAGE_REGION && STORAGE_IDENTITY_POOL_ID) {
+    Amplify.configure({
+      Auth: {
+        identityPoolId: STORAGE_IDENTITY_POOL_ID,
+        region: STORAGE_REGION,
+      },
+      Storage: {
+        bucket: STORAGE_BUCKET,
+        region: STORAGE_REGION,
+        defaultAccessLevel: "public",
+      },
+    });
+    amplifyConfigured = true;
+  }
+}
 
 const DIRECTORY_TYPES = [
   {key: "source", label: "Source Directory"},
@@ -180,6 +208,29 @@ function DirectoryPanel({title, tree, onSelectInfo}) {
           <TreeNode node={tree} onSelectInfo={onSelectInfo} />
         ) : (
           <span className="tree-empty">No data</span>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function AwsStorageBrowserPanel({ready}) {
+  return (
+    <section className="panel storage-panel">
+      <header>
+        <h2>S3 Storage Browser</h2>
+      </header>
+      <div className="panel-body storage-panel-body">
+        {ready ? (
+          <div className="storage-browser-wrapper">
+            <StorageBrowser />
+          </div>
+        ) : (
+          <div className="storage-browser-placeholder">
+            Provide `VITE_STORAGE_BUCKET`, `VITE_STORAGE_REGION`, and
+            `VITE_STORAGE_IDENTITY_POOL_ID` to enable the Amplify Storage
+            Browser.
+          </div>
         )}
       </div>
     </section>
@@ -389,6 +440,7 @@ function AddCanvasModal({
   images,
   submitting,
   error,
+  allowManualInput = false,
 }) {
   if (!open) return null;
 
@@ -397,32 +449,24 @@ function AddCanvasModal({
     onChange(name, value);
   };
 
+  const hasImageOptions = Array.isArray(images) && images.length > 0;
+  const showManualInput = allowManualInput || !hasImageOptions;
+
   return (
     <div className="modal-backdrop" role="presentation">
       <div className="modal" role="dialog" aria-modal="true">
         <header>
           <h3>Add Canvas</h3>
         </header>
-        {images.length === 0 ? (
-          <div className="modal-form">
-            <p className="manifest-detail-placeholder">
-              No IIIF images available. Process an image first.
-            </p>
-            <div className="modal-actions">
-              <button type="button" className="button-secondary" onClick={onClose}>
-                Close
-              </button>
-            </div>
-          </div>
-        ) : (
-          <form onSubmit={onSubmit} className="modal-form">
+        <form onSubmit={onSubmit} className="modal-form">
+          {hasImageOptions && (
             <label>
               <span>Image</span>
               <select
                 name="imagePath"
                 value={form.imagePath}
                 onChange={handleChange}
-                required
+                required={!showManualInput}
                 disabled={submitting}
               >
                 <option value="" disabled>
@@ -435,33 +479,54 @@ function AddCanvasModal({
                 ))}
               </select>
             </label>
+          )}
+          {showManualInput && (
             <label>
-              <span>Canvas label</span>
+              <span>IIIF info.json URL</span>
               <input
-                name="label"
-                type="text"
-                value={form.label}
+                name="imageUrl"
+                type="url"
+                value={form.imageUrl || ""}
                 onChange={handleChange}
-                placeholder="e.g. Page 1"
+                placeholder="https://example.com/iiif/.../info.json"
                 disabled={submitting}
+                required={!hasImageOptions}
               />
             </label>
-            {error && <div className="status status--error">{error}</div>}
-            <div className="modal-actions">
-              <button
-                type="button"
-                className="button-secondary"
-                onClick={onClose}
-                disabled={submitting}
-              >
-                Cancel
-              </button>
-              <button type="submit" disabled={submitting || !form.imagePath}>
-                {submitting ? "Adding…" : "Add"}
-              </button>
-            </div>
-          </form>
-        )}
+          )}
+          <label>
+            <span>Canvas label</span>
+            <input
+              name="label"
+              type="text"
+              value={form.label}
+              onChange={handleChange}
+              placeholder="e.g. Page 1"
+              disabled={submitting}
+            />
+          </label>
+          {error && <div className="status status--error">{error}</div>}
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={onClose}
+              disabled={submitting}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={
+                submitting ||
+                (!hasImageOptions && !form.imageUrl) ||
+                (hasImageOptions && !form.imagePath && !showManualInput)
+              }
+            >
+              {submitting ? "Adding…" : "Add"}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -469,6 +534,12 @@ function AddCanvasModal({
 
 export default function App() {
   const isLocalBackend = BACKEND === "local";
+  const isAwsBackend = BACKEND === "aws";
+  const manifestApiBase = isAwsBackend ? REMOTE_MANIFEST_API_BASE : LOCAL_MANIFEST_API_BASE;
+  const manifestApiAvailable = Boolean(manifestApiBase);
+  const storageBrowserReady = Boolean(
+    STORAGE_BUCKET && STORAGE_REGION && STORAGE_IDENTITY_POOL_ID,
+  );
   const [trees, setTrees] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -476,7 +547,7 @@ export default function App() {
   const [selectedInfo, setSelectedInfo] = useState(null);
   const [viewerError, setViewerError] = useState(null);
   const [manifests, setManifests] = useState([]);
-  const [manifestLoading, setManifestLoading] = useState(isLocalBackend);
+  const [manifestLoading, setManifestLoading] = useState(manifestApiAvailable);
   const [manifestError, setManifestError] = useState(null);
   const [selectedManifestId, setSelectedManifestId] = useState(null);
   const [manifestDetail, setManifestDetail] = useState(null);
@@ -487,11 +558,16 @@ export default function App() {
   const [manifestFormError, setManifestFormError] = useState(null);
   const [manifestFormSubmitting, setManifestFormSubmitting] = useState(false);
   const [isCanvasModalOpen, setCanvasModalOpen] = useState(false);
-  const [canvasForm, setCanvasForm] = useState({imagePath: "", label: ""});
+  const [canvasForm, setCanvasForm] = useState({imagePath: "", imageUrl: "", label: ""});
   const [canvasModalError, setCanvasModalError] = useState(null);
   const [canvasModalSubmitting, setCanvasModalSubmitting] = useState(false);
   const [canvasSaving, setCanvasSaving] = useState(false);
   const [canvasActionError, setCanvasActionError] = useState(null);
+  useEffect(() => {
+    if (storageBrowserReady) {
+      configureAmplifyStorage();
+    }
+  }, [storageBrowserReady]);
 
   const availableImages = useMemo(() => {
     if (!isLocalBackend || !trees.output) return [];
@@ -501,11 +577,34 @@ export default function App() {
     }));
   }, [isLocalBackend, trees.output]);
 
+  const manifestApiUrl = useCallback(
+    (path = "") => {
+      if (!manifestApiBase) return null;
+      const suffix = path ? `/${path.replace(/^\/+/, "")}` : "";
+      return `${manifestApiBase}${suffix}`;
+    },
+    [manifestApiBase],
+  );
+
   const refreshManifests = useCallback(async () => {
+    if (!manifestApiAvailable) {
+      setManifests([]);
+      setManifestError(
+        isAwsBackend
+          ? "Manifest API URL is not configured. Set VITE_MANIFEST_API_URL and redeploy."
+          : null,
+      );
+      setManifestLoading(false);
+      return;
+    }
     setManifestLoading(true);
     setManifestError(null);
     try {
-      const response = await fetch("/api/manifests");
+      const endpoint = manifestApiUrl();
+      if (!endpoint) {
+        throw new Error("Manifest API unavailable");
+      }
+      const response = await fetch(endpoint);
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.error || "Unable to load manifests");
@@ -517,17 +616,21 @@ export default function App() {
     } finally {
       setManifestLoading(false);
     }
-  }, []);
+  }, [isAwsBackend, manifestApiAvailable, manifestApiUrl]);
 
   const fetchManifestDetail = useCallback(async (identifier) => {
-    if (!identifier) {
+    if (!identifier || !manifestApiAvailable) {
       setManifestDetail(null);
       return;
     }
     setManifestDetailLoading(true);
     setManifestDetailError(null);
     try {
-      const response = await fetch(`/api/manifests/${encodeURIComponent(identifier)}`);
+      const endpoint = manifestApiUrl(encodeURIComponent(identifier));
+      if (!endpoint) {
+        throw new Error("Manifest API unavailable");
+      }
+      const response = await fetch(endpoint);
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.error || "Unable to load manifest");
@@ -546,7 +649,7 @@ export default function App() {
     } finally {
       setManifestDetailLoading(false);
     }
-  }, []);
+  }, [manifestApiAvailable, manifestApiUrl]);
 
   const handleManifestFieldChange = useCallback((name, value) => {
     setManifestForm((prev) => {
@@ -566,6 +669,9 @@ export default function App() {
           const fallbackLabel = prev.label.trim() ? prev.label : selected?.label || "";
           return {...prev, imagePath: value, label: fallbackLabel};
         }
+        if (name === "imageUrl") {
+          return {...prev, imageUrl: value};
+        }
         return {...prev, [name]: value};
       });
     },
@@ -573,6 +679,7 @@ export default function App() {
   );
 
   const handleOpenManifestModal = () => {
+    if (!manifestApiAvailable) return;
     setManifestForm({label: "", identifier: ""});
     setManifestFormError(null);
     setManifestModalOpen(true);
@@ -596,7 +703,11 @@ export default function App() {
     setManifestFormSubmitting(true);
     setManifestFormError(null);
     try {
-      const response = await fetch("/api/manifests", {
+      const endpoint = manifestApiUrl();
+      if (!endpoint) {
+        throw new Error("Manifest API unavailable");
+      }
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload),
@@ -616,13 +727,23 @@ export default function App() {
   };
 
   const handleOpenCanvasModal = () => {
-    if (!availableImages.length) return;
-    const defaultPath = availableImages[0]?.path || "";
-    const selected = availableImages.find((img) => img.path === (canvasForm.imagePath || defaultPath));
-    setCanvasForm({
-      imagePath: selected?.path || defaultPath,
-      label: selected?.label || "",
-    });
+    if (!manifestDetail) return;
+    if (isLocalBackend) {
+      if (!availableImages.length) return;
+      const defaultPath = availableImages[0]?.path || "";
+      const selected = availableImages.find((img) => img.path === (canvasForm.imagePath || defaultPath));
+      setCanvasForm({
+        imagePath: selected?.path || defaultPath,
+        imageUrl: "",
+        label: selected?.label || "",
+      });
+    } else {
+      setCanvasForm((prev) => ({
+        imagePath: "",
+        imageUrl: prev.imageUrl || "",
+        label: prev.label || "",
+      }));
+    }
     setCanvasModalError(null);
     setCanvasModalOpen(true);
   };
@@ -640,14 +761,15 @@ export default function App() {
       setCanvasSaving(true);
       setCanvasActionError(null);
       try {
-        const response = await fetch(
-          `/api/manifests/${encodeURIComponent(selectedManifestId)}/items`,
-          {
-            method: "PUT",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({items}),
-          },
-        );
+        const endpoint = manifestApiUrl(`${encodeURIComponent(selectedManifestId)}/items`);
+        if (!endpoint) {
+          throw new Error("Manifest API unavailable");
+        }
+        const response = await fetch(endpoint, {
+          method: "PUT",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({items}),
+        });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(data.error || "Unable to save canvases");
@@ -668,7 +790,7 @@ export default function App() {
         setCanvasSaving(false);
       }
     },
-    [selectedManifestId],
+    [manifestApiUrl, selectedManifestId],
   );
 
   const handleCanvasSubmit = async (event) => {
@@ -677,25 +799,45 @@ export default function App() {
       setCanvasModalError("Select a manifest first");
       return;
     }
-    if (!canvasForm.imagePath) {
-      setCanvasModalError("Choose an image to add");
-      return;
-    }
     setCanvasModalSubmitting(true);
     setCanvasModalError(null);
     try {
-      const response = await fetch(`/iiif/output/${canvasForm.imagePath}`);
+      let infoUrl;
+      if (isLocalBackend) {
+        if (!canvasForm.imagePath) {
+          setCanvasModalError("Choose an image to add");
+          setCanvasModalSubmitting(false);
+          return;
+        }
+        infoUrl = `/iiif/output/${canvasForm.imagePath}`;
+      } else {
+        const providedUrl = (canvasForm.imageUrl || "").trim();
+        if (!providedUrl) {
+          setCanvasModalError("Enter a IIIF info.json URL");
+          setCanvasModalSubmitting(false);
+          return;
+        }
+        infoUrl = providedUrl;
+      }
+      const response = await fetch(infoUrl);
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.error || "Unable to load image info");
       }
       const selected = availableImages.find((img) => img.path === canvasForm.imagePath);
-      const label = canvasForm.label.trim() || selected?.label || "Untitled canvas";
+      const derivedLabelFromUrl = () => {
+        const trimmed = infoUrl.split("/").filter(Boolean).pop() || "canvas";
+        return trimmed.replace(/info\.json$/i, "");
+      };
+      const label = canvasForm.label.trim()
+        || selected?.label
+        || derivedLabelFromUrl()
+        || "Untitled canvas";
       const nextCanvas = buildCanvasResource(manifestDetail.manifest, data, label);
       const nextItems = [...(manifestDetail.manifest.items || []), nextCanvas];
       await persistManifestItems(nextItems);
       setCanvasModalOpen(false);
-      setCanvasForm({imagePath: "", label: ""});
+      setCanvasForm({imagePath: "", imageUrl: "", label: ""});
     } catch (err) {
       setCanvasModalError(err.message);
     } finally {
@@ -763,19 +905,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isLocalBackend) return;
+    if (!manifestApiAvailable) return;
     refreshManifests();
-  }, [isLocalBackend, refreshManifests]);
+  }, [manifestApiAvailable, refreshManifests]);
 
   useEffect(() => {
-    if (!isLocalBackend) return;
+    if (!manifestApiAvailable) {
+      setManifestDetail(null);
+      setCanvasActionError(null);
+      return;
+    }
     if (!selectedManifestId) {
       setManifestDetail(null);
       setCanvasActionError(null);
       return;
     }
     fetchManifestDetail(selectedManifestId);
-  }, [fetchManifestDetail, isLocalBackend, selectedManifestId]);
+  }, [fetchManifestDetail, manifestApiAvailable, selectedManifestId]);
 
   useEffect(() => {
     async function fetchInfo(relativePath) {
@@ -851,12 +997,17 @@ export default function App() {
     );
   }, [selectedInfo]);
 
-  const canAddCanvas = Boolean(manifestDetail) && availableImages.length > 0;
-  const disableAddReason = !canAddCanvas && manifestDetail
-    ? availableImages.length === 0
-      ? "Process at least one IIIF image to add canvases."
-      : null
-    : null;
+  const canAddCanvas = Boolean(manifestDetail) && manifestApiAvailable && (isLocalBackend ? availableImages.length > 0 : true);
+  const disableAddReason = (() => {
+    if (!manifestDetail) return null;
+    if (!manifestApiAvailable) {
+      return "Manifest API unavailable.";
+    }
+    if (isLocalBackend && availableImages.length === 0) {
+      return "Process at least one IIIF image to add canvases.";
+    }
+    return null;
+  })();
 
   return (
     <main className="layout">
@@ -870,7 +1021,10 @@ export default function App() {
         {error && <span className="status status--error">{error}</span>}
       </header>
       {BACKEND === "aws" ? (
-        <AwsImageLookup onSelect={handleAwsSelect} />
+        <div className="columns">
+          <AwsImageLookup onSelect={handleAwsSelect} />
+          <AwsStorageBrowserPanel ready={storageBrowserReady} />
+        </div>
       ) : (
         <div className="columns">
           {DIRECTORY_TYPES.map(({key, label}) => (
@@ -883,16 +1037,27 @@ export default function App() {
           ))}
         </div>
       )}
-      {isLocalBackend && (
+      {(isLocalBackend || isAwsBackend) && (
         <section className="panel manifest-panel">
           <header className="manifest-panel-header">
             <h2>Presentation Manifests</h2>
-            <button type="button" onClick={handleOpenManifestModal}>
+            <button
+              type="button"
+              onClick={handleOpenManifestModal}
+              disabled={!manifestApiAvailable}
+            >
               Add Manifest
             </button>
           </header>
           <div className="panel-body manifest-panel-body">
-            {manifestError && (
+            {!manifestApiAvailable && (
+              <div className="status status--error">
+                {isAwsBackend
+                  ? "Manifest API URL is not configured. Update VITE_MANIFEST_API_URL to point at the deployed endpoint."
+                  : "Manifest tools unavailable."}
+              </div>
+            )}
+            {manifestError && manifestApiAvailable && (
               <div className="status status--error">{manifestError}</div>
             )}
             <div className="manifest-content">
@@ -957,6 +1122,7 @@ export default function App() {
         images={availableImages}
         submitting={canvasModalSubmitting}
         error={canvasModalError}
+        allowManualInput={!isLocalBackend}
       />
     </main>
   );

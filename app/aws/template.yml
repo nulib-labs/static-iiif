@@ -28,6 +28,7 @@ Globals:
       Variables: 
         SOURCE_BUCKET: !Sub "${AWS::StackName}-source"
         IIIF_BUCKET: !Sub "${AWS::StackName}-iiif"
+        IIIF_BASE_URL: !Sub "https://${AWS::StackName}-iiif.s3.${AWS::Region}.amazonaws.com/iiif/output"
 
 Resources:
   SourceBucket:
@@ -75,6 +76,65 @@ Resources:
             Principal: "*"
             Action: s3:GetObject
             Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/*"
+
+  ManifestHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - OPTIONS
+        AllowHeaders:
+          - "*"
+
+  ManifestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-manifest-api"
+      CodeUri: lambdas/manifest/
+      Handler: index.handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:HeadObject
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/*"
+      Events:
+        GetManifests:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests
+            Method: GET
+        CreateManifest:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests
+            Method: POST
+        GetManifestById:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/{id}
+            Method: GET
+        UpdateManifestItems:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/{id}/items
+            Method: PUT
 
   IIIFImageFunction:
     Type: AWS::Serverless::Function
@@ -130,6 +190,14 @@ Resources:
           Value: aws
         - Name: VITE_IIIF_BASE_URL
           Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
+        - Name: VITE_MANIFEST_API_URL
+          Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/manifests"
+        - Name: VITE_STORAGE_BUCKET
+          Value: !Sub "${AWS::StackName}-iiif"
+        - Name: VITE_STORAGE_REGION
+          Value: !Ref AWS::Region
+        - Name: VITE_STORAGE_IDENTITY_POOL_ID
+          Value: ""
 
   AmplifyBranch:
     Type: AWS::Amplify::Branch
@@ -158,3 +226,5 @@ Outputs:
     Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
   UIEndpoint:
     Value: !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
+  ManifestApiUrl:
+    Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com"

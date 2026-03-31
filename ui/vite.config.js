@@ -3,6 +3,15 @@ import react from '@vitejs/plugin-react';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const {
+  manifestIdPattern,
+  sanitizeManifestIdentifier,
+  manifestObjectKey,
+  createManifestTemplate,
+} = require('../app/shared/manifest.js');
 
 const projectRoot = path.resolve(__dirname, '..');
 const directoryRoots = {
@@ -12,7 +21,6 @@ const directoryRoots = {
 const presentationRoot = path.join(directoryRoots.output, 'presentation');
 const manifestRoot = path.join(presentationRoot, 'manifest');
 const manifestBaseUrl = (process.env.IIIF_BASE_URL || 'http://localhost:5173/iiif/output').replace(/\/$/, '');
-const manifestIdPattern = /^[A-Za-z0-9._-]+$/;
 
 const contentTypes = {
   '.json': 'application/json',
@@ -26,20 +34,6 @@ const contentTypes = {
 
 async function ensureManifestRoot() {
   await fsp.mkdir(manifestRoot, { recursive: true });
-}
-
-function sanitizeManifestIdentifier(raw) {
-  const trimmed = (raw || '').trim();
-  if (!trimmed) {
-    throw new Error('Manifest id is required');
-  }
-  if (!manifestIdPattern.test(trimmed)) {
-    throw new Error('Manifest id may only include letters, numbers, periods, underscores, or dashes');
-  }
-  if (trimmed.includes('..')) {
-    throw new Error('Manifest id cannot contain parent directory references');
-  }
-  return trimmed;
 }
 
 function manifestFilePath(identifier) {
@@ -76,7 +70,7 @@ function manifestSummary(identifier, manifest) {
     identifier,
     label,
     manifestUrl: manifest?.id || '',
-    relativePath: `presentation/manifest/${identifier}/manifest.json`,
+    relativePath: manifestObjectKey(identifier),
     itemCount: Array.isArray(manifest?.items) ? manifest.items.length : 0,
   };
 }
@@ -137,18 +131,6 @@ async function parseJsonBody(req) {
   } catch (error) {
     throw new Error('Invalid JSON payload');
   }
-}
-
-function createManifestTemplate({ identifier, label }) {
-  return {
-    '@context': 'http://iiif.io/api/presentation/3/context.json',
-    id: `${manifestBaseUrl}/presentation/manifest/${identifier}/manifest.json`,
-    type: 'Manifest',
-    label: {
-      none: [label],
-    },
-    items: [],
-  };
 }
 
 function sendJson(res, statusCode, payload) {
@@ -232,7 +214,11 @@ function createApiMiddleware() {
                 sendJson(res, 409, { error: 'A manifest with that id already exists' });
                 return;
               }
-              const manifest = createManifestTemplate({ identifier, label });
+              const manifest = createManifestTemplate({
+                baseUrl: manifestBaseUrl,
+                identifier,
+                label,
+              });
               await writeManifest(identifier, manifest);
               sendJson(res, 201, { manifest: manifestDetail(identifier, manifest) });
               return;
