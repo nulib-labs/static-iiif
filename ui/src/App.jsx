@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useState} from "react";
+import {useCallback, useEffect, useMemo, useState} from "react";
 import Image from "@samvera/clover-iiif/image";
 import "./App.css";
 import {trimTileChildren} from "./utils/tree";
@@ -10,6 +10,89 @@ const DIRECTORY_TYPES = [
   {key: "source", label: "Source Directory"},
   {key: "output", label: "Output Directory"},
 ];
+
+function slugifyManifestId(value) {
+  return (value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function collectInfoNodes(node, acc = []) {
+  if (!node) return acc;
+  if (node.type === "file" && node.name?.toLowerCase() === "info.json") {
+    const parent = node.path.replace(/\/info\.json$/i, "");
+    acc.push({
+      path: node.path,
+      label: node.displayName || parent.split("/").pop() || node.name,
+      parent,
+    });
+    return acc;
+  }
+  if (Array.isArray(node.children)) {
+    node.children.forEach((child) => collectInfoNodes(child, acc));
+  }
+  return acc;
+}
+
+function buildCanvasResource(manifest, imageInfo, label) {
+  if (!manifest?.id) {
+    throw new Error("Manifest is missing an id");
+  }
+  if (!imageInfo?.id) {
+    throw new Error("Image info is missing an id");
+  }
+  const manifestBase = manifest.id.replace(/\/manifest\.json$/i, "");
+  const normalizedLabel = label?.trim() || "Canvas";
+  const slugBase = slugifyManifestId(normalizedLabel) || slugifyManifestId(imageInfo.id.split("/").pop() || "");
+  const uniqueSlug = slugBase ? `${slugBase}-${Date.now().toString(36)}` : Date.now().toString(36);
+  const canvasId = `${manifestBase}/canvas/${uniqueSlug}`;
+  const pageId = `${canvasId}/page/1`;
+  const annotationId = `${canvasId}/annotation/1`;
+  const serviceId = imageInfo.id.replace(/\/$/, "");
+  const imageService = {
+    id: serviceId,
+    type: imageInfo.type || "ImageService3",
+    profile: Array.isArray(imageInfo.profile)
+      ? imageInfo.profile[0]
+      : imageInfo.profile || "level0",
+    width: imageInfo.width,
+    height: imageInfo.height,
+  };
+  const canvas = {
+    id: canvasId,
+    type: "Canvas",
+    width: imageInfo.width,
+    height: imageInfo.height,
+    items: [
+      {
+        id: pageId,
+        type: "AnnotationPage",
+        items: [
+          {
+            id: annotationId,
+            type: "Annotation",
+            motivation: "painting",
+            target: canvasId,
+            body: {
+              id: `${serviceId}/full/max/0/default.jpg`,
+              type: "Image",
+              format: "image/jpeg",
+              width: imageInfo.width,
+              height: imageInfo.height,
+              service: [imageService],
+            },
+          },
+        ],
+      },
+    ],
+  };
+  if (normalizedLabel) {
+    canvas.label = {none: [normalizedLabel]};
+  }
+  return canvas;
+}
 
 function AwsImageLookup({onSelect}) {
   const [value, setValue] = useState(IIIF_BASE_URL ? `${IIIF_BASE_URL}/` : "");
@@ -103,13 +186,551 @@ function DirectoryPanel({title, tree, onSelectInfo}) {
   );
 }
 
+function ManifestList({manifests, selectedId, onSelect}) {
+  if (!manifests || manifests.length === 0) {
+    return <div className="tree-empty">No manifests yet.</div>;
+  }
+
+  return (
+    <ul className="manifest-list">
+      {manifests.map((manifest) => {
+        const isActive = manifest.identifier === selectedId;
+        const canvasCount = Number.isFinite(manifest.itemCount)
+          ? manifest.itemCount
+          : Array.isArray(manifest.manifest?.items)
+            ? manifest.manifest.items.length
+            : 0;
+        return (
+          <li key={manifest.identifier}>
+            <button
+              type="button"
+              className={`manifest-list-item ${isActive ? "manifest-list-item--active" : ""}`}
+              onClick={() => onSelect(manifest.identifier)}
+            >
+              <strong>{manifest.label || manifest.identifier}</strong>
+              <span>ID: {manifest.identifier}</span>
+              <span>
+                {canvasCount} {canvasCount === 1 ? "canvas" : "canvases"}
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function ManifestDetail({
+  detail,
+  loading,
+  error,
+  onAddCanvas,
+  canAddCanvas,
+  onReorderCanvas,
+  onRemoveCanvas,
+  canvasSaving,
+  canvasActionError,
+  disableAddReason,
+}) {
+  if (loading) {
+    return <div className="manifest-detail-placeholder">Loading manifest…</div>;
+  }
+
+  if (error) {
+    return <div className="status status--error">{error}</div>;
+  }
+
+  if (!detail) {
+    return <div className="manifest-detail-placeholder">Select a manifest to edit canvases.</div>;
+  }
+
+  const canvasCount = Array.isArray(detail.manifest?.items)
+    ? detail.manifest.items.length
+    : 0;
+
+  const canvases = Array.isArray(detail.manifest?.items)
+    ? detail.manifest.items
+    : [];
+
+  return (
+    <div className="manifest-detail">
+      <div className="manifest-detail-header">
+        <div className="manifest-detail-meta">
+          <h3>{detail.label || detail.identifier}</h3>
+          <code>{detail.manifestUrl}</code>
+        </div>
+        <button
+          type="button"
+          onClick={onAddCanvas}
+          disabled={!canAddCanvas}
+          title={!canAddCanvas && disableAddReason ? disableAddReason : undefined}
+        >
+          Add Canvas
+        </button>
+      </div>
+      {disableAddReason && !canAddCanvas && (
+        <p className="manifest-detail-hint">{disableAddReason}</p>
+      )}
+      {canvasActionError && (
+        <div className="status status--error">{canvasActionError}</div>
+      )}
+      {canvasSaving && <div className="status">Saving canvases…</div>}
+      <div className="manifest-detail-body">
+        {canvases.length === 0 ? (
+          <p>
+            {canAddCanvas
+              ? "No canvases yet. Add one to start building the viewing order."
+              : "No canvases yet."}
+          </p>
+        ) : (
+          <ul className="canvas-list">
+            {canvases.map((canvas, index) => (
+              <li key={canvas.id || `${index}`} className="canvas-list-item">
+                <div className="canvas-list-info">
+                  <strong>{canvas.label?.none?.[0] || `Canvas ${index + 1}`}</strong>
+                  <span>
+                    {canvas.items?.[0]?.items?.[0]?.body?.service?.[0]?.id ||
+                      canvas.items?.[0]?.items?.[0]?.body?.id ||
+                      ""}
+                  </span>
+                </div>
+                <div className="canvas-list-actions">
+                  <button
+                    type="button"
+                    onClick={() => onReorderCanvas(index, -1)}
+                    disabled={index === 0 || canvasSaving}
+                    aria-label="Move up"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onReorderCanvas(index, 1)}
+                    disabled={index === canvases.length - 1 || canvasSaving}
+                    aria-label="Move down"
+                  >
+                    ↓
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onRemoveCanvas(index)}
+                    disabled={canvasSaving}
+                  >
+                    Remove
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ManifestModal({open, onClose, onSubmit, form, onChange, submitting, error}) {
+  if (!open) return null;
+
+  const handleChange = (evt) => {
+    const {name, value} = evt.target;
+    onChange(name, value);
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div className="modal" role="dialog" aria-modal="true">
+        <header>
+          <h3>Create Manifest</h3>
+        </header>
+        <form onSubmit={onSubmit} className="modal-form">
+          <label>
+            <span>Title (label)</span>
+            <input
+              name="label"
+              type="text"
+              required
+              value={form.label}
+              onChange={handleChange}
+              placeholder="e.g. 1973 yearbook"
+            />
+          </label>
+          <label>
+            <span>ID</span>
+            <input
+              name="identifier"
+              type="text"
+              required
+              value={form.identifier}
+              onChange={handleChange}
+              placeholder="e.g. 1973-yearbook"
+            />
+          </label>
+          {error && <div className="status status--error">{error}</div>}
+          <div className="modal-actions">
+            <button type="button" className="button-secondary" onClick={onClose} disabled={submitting}>
+              Cancel
+            </button>
+            <button type="submit" disabled={submitting}>
+              {submitting ? "Creating…" : "Next"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AddCanvasModal({
+  open,
+  onClose,
+  onSubmit,
+  form,
+  onChange,
+  images,
+  submitting,
+  error,
+}) {
+  if (!open) return null;
+
+  const handleChange = (evt) => {
+    const {name, value} = evt.target;
+    onChange(name, value);
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div className="modal" role="dialog" aria-modal="true">
+        <header>
+          <h3>Add Canvas</h3>
+        </header>
+        {images.length === 0 ? (
+          <div className="modal-form">
+            <p className="manifest-detail-placeholder">
+              No IIIF images available. Process an image first.
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="button-secondary" onClick={onClose}>
+                Close
+              </button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={onSubmit} className="modal-form">
+            <label>
+              <span>Image</span>
+              <select
+                name="imagePath"
+                value={form.imagePath}
+                onChange={handleChange}
+                required
+                disabled={submitting}
+              >
+                <option value="" disabled>
+                  Choose an image
+                </option>
+                {images.map((image) => (
+                  <option key={image.path} value={image.path}>
+                    {image.label} — {image.parent}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Canvas label</span>
+              <input
+                name="label"
+                type="text"
+                value={form.label}
+                onChange={handleChange}
+                placeholder="e.g. Page 1"
+                disabled={submitting}
+              />
+            </label>
+            {error && <div className="status status--error">{error}</div>}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={onClose}
+                disabled={submitting}
+              >
+                Cancel
+              </button>
+              <button type="submit" disabled={submitting || !form.imagePath}>
+                {submitting ? "Adding…" : "Add"}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
+  const isLocalBackend = BACKEND === "local";
   const [trees, setTrees] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedInfoPath, setSelectedInfoPath] = useState(null);
   const [selectedInfo, setSelectedInfo] = useState(null);
   const [viewerError, setViewerError] = useState(null);
+  const [manifests, setManifests] = useState([]);
+  const [manifestLoading, setManifestLoading] = useState(isLocalBackend);
+  const [manifestError, setManifestError] = useState(null);
+  const [selectedManifestId, setSelectedManifestId] = useState(null);
+  const [manifestDetail, setManifestDetail] = useState(null);
+  const [manifestDetailLoading, setManifestDetailLoading] = useState(false);
+  const [manifestDetailError, setManifestDetailError] = useState(null);
+  const [isManifestModalOpen, setManifestModalOpen] = useState(false);
+  const [manifestForm, setManifestForm] = useState({label: "", identifier: ""});
+  const [manifestFormError, setManifestFormError] = useState(null);
+  const [manifestFormSubmitting, setManifestFormSubmitting] = useState(false);
+  const [isCanvasModalOpen, setCanvasModalOpen] = useState(false);
+  const [canvasForm, setCanvasForm] = useState({imagePath: "", label: ""});
+  const [canvasModalError, setCanvasModalError] = useState(null);
+  const [canvasModalSubmitting, setCanvasModalSubmitting] = useState(false);
+  const [canvasSaving, setCanvasSaving] = useState(false);
+  const [canvasActionError, setCanvasActionError] = useState(null);
+
+  const availableImages = useMemo(() => {
+    if (!isLocalBackend || !trees.output) return [];
+    return collectInfoNodes(trees.output, []).map((entry) => ({
+      ...entry,
+      identifier: entry.parent.split("/").pop() || entry.label,
+    }));
+  }, [isLocalBackend, trees.output]);
+
+  const refreshManifests = useCallback(async () => {
+    setManifestLoading(true);
+    setManifestError(null);
+    try {
+      const response = await fetch("/api/manifests");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to load manifests");
+      }
+      setManifests(Array.isArray(data.manifests) ? data.manifests : []);
+    } catch (err) {
+      setManifests([]);
+      setManifestError(err.message);
+    } finally {
+      setManifestLoading(false);
+    }
+  }, []);
+
+  const fetchManifestDetail = useCallback(async (identifier) => {
+    if (!identifier) {
+      setManifestDetail(null);
+      return;
+    }
+    setManifestDetailLoading(true);
+    setManifestDetailError(null);
+    try {
+      const response = await fetch(`/api/manifests/${encodeURIComponent(identifier)}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to load manifest");
+      }
+      setManifestDetail(data.manifest);
+      setManifests((prev) =>
+        prev.map((manifest) =>
+          manifest.identifier === identifier
+            ? {...manifest, itemCount: data.manifest?.itemCount ?? manifest.itemCount}
+            : manifest,
+        ),
+      );
+    } catch (err) {
+      setManifestDetail(null);
+      setManifestDetailError(err.message);
+    } finally {
+      setManifestDetailLoading(false);
+    }
+  }, []);
+
+  const handleManifestFieldChange = useCallback((name, value) => {
+    setManifestForm((prev) => {
+      if (name === "label") {
+        const fallbackId = prev.identifier.trim() ? prev.identifier : slugifyManifestId(value);
+        return {...prev, label: value, identifier: fallbackId};
+      }
+      return {...prev, [name]: value};
+    });
+  }, []);
+
+  const handleCanvasFieldChange = useCallback(
+    (name, value) => {
+      setCanvasForm((prev) => {
+        if (name === "imagePath") {
+          const selected = availableImages.find((img) => img.path === value);
+          const fallbackLabel = prev.label.trim() ? prev.label : selected?.label || "";
+          return {...prev, imagePath: value, label: fallbackLabel};
+        }
+        return {...prev, [name]: value};
+      });
+    },
+    [availableImages],
+  );
+
+  const handleOpenManifestModal = () => {
+    setManifestForm({label: "", identifier: ""});
+    setManifestFormError(null);
+    setManifestModalOpen(true);
+  };
+
+  const handleCloseManifestModal = () => {
+    setManifestModalOpen(false);
+    setManifestFormError(null);
+  };
+
+  const handleManifestSubmit = async (event) => {
+    event.preventDefault();
+    const payload = {
+      label: manifestForm.label.trim(),
+      identifier: manifestForm.identifier.trim(),
+    };
+    if (!payload.label || !payload.identifier) {
+      setManifestFormError("Both label and id are required");
+      return;
+    }
+    setManifestFormSubmitting(true);
+    setManifestFormError(null);
+    try {
+      const response = await fetch("/api/manifests", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to create manifest");
+      }
+      await refreshManifests();
+      setSelectedManifestId(data.manifest?.identifier || payload.identifier);
+      setManifestModalOpen(false);
+    } catch (err) {
+      setManifestFormError(err.message);
+    } finally {
+      setManifestFormSubmitting(false);
+    }
+  };
+
+  const handleOpenCanvasModal = () => {
+    if (!availableImages.length) return;
+    const defaultPath = availableImages[0]?.path || "";
+    const selected = availableImages.find((img) => img.path === (canvasForm.imagePath || defaultPath));
+    setCanvasForm({
+      imagePath: selected?.path || defaultPath,
+      label: selected?.label || "",
+    });
+    setCanvasModalError(null);
+    setCanvasModalOpen(true);
+  };
+
+  const handleCloseCanvasModal = () => {
+    setCanvasModalOpen(false);
+    setCanvasModalError(null);
+  };
+
+  const persistManifestItems = useCallback(
+    async (items) => {
+      if (!selectedManifestId) {
+        throw new Error("Select a manifest first");
+      }
+      setCanvasSaving(true);
+      setCanvasActionError(null);
+      try {
+        const response = await fetch(
+          `/api/manifests/${encodeURIComponent(selectedManifestId)}/items`,
+          {
+            method: "PUT",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({items}),
+          },
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || "Unable to save canvases");
+        }
+        setManifestDetail(data.manifest);
+        setManifests((prev) =>
+          prev.map((manifest) =>
+            manifest.identifier === selectedManifestId
+              ? {...manifest, itemCount: data.manifest.itemCount}
+              : manifest,
+          ),
+        );
+        return data.manifest;
+      } catch (err) {
+        setCanvasActionError(err.message);
+        throw err;
+      } finally {
+        setCanvasSaving(false);
+      }
+    },
+    [selectedManifestId],
+  );
+
+  const handleCanvasSubmit = async (event) => {
+    event.preventDefault();
+    if (!manifestDetail?.manifest) {
+      setCanvasModalError("Select a manifest first");
+      return;
+    }
+    if (!canvasForm.imagePath) {
+      setCanvasModalError("Choose an image to add");
+      return;
+    }
+    setCanvasModalSubmitting(true);
+    setCanvasModalError(null);
+    try {
+      const response = await fetch(`/iiif/output/${canvasForm.imagePath}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to load image info");
+      }
+      const selected = availableImages.find((img) => img.path === canvasForm.imagePath);
+      const label = canvasForm.label.trim() || selected?.label || "Untitled canvas";
+      const nextCanvas = buildCanvasResource(manifestDetail.manifest, data, label);
+      const nextItems = [...(manifestDetail.manifest.items || []), nextCanvas];
+      await persistManifestItems(nextItems);
+      setCanvasModalOpen(false);
+      setCanvasForm({imagePath: "", label: ""});
+    } catch (err) {
+      setCanvasModalError(err.message);
+    } finally {
+      setCanvasModalSubmitting(false);
+    }
+  };
+
+  const handleReorderCanvas = useCallback(
+    async (index, delta) => {
+      if (!manifestDetail?.manifest?.items) return;
+      const items = [...manifestDetail.manifest.items];
+      const targetIndex = index + delta;
+      if (targetIndex < 0 || targetIndex >= items.length) return;
+      [items[index], items[targetIndex]] = [items[targetIndex], items[index]];
+      try {
+        await persistManifestItems(items);
+      } catch (err) {
+        // Error handled via canvasActionError state.
+      }
+    },
+    [manifestDetail, persistManifestItems],
+  );
+
+  const handleRemoveCanvas = useCallback(
+    async (index) => {
+      if (!manifestDetail?.manifest?.items) return;
+      const items = manifestDetail.manifest.items.filter((_, idx) => idx !== index);
+      try {
+        await persistManifestItems(items);
+      } catch (err) {
+        // Error handled via canvasActionError state.
+      }
+    },
+    [manifestDetail, persistManifestItems],
+  );
 
   useEffect(() => {
     if (BACKEND === "aws") {
@@ -140,6 +761,21 @@ export default function App() {
 
     fetchTrees();
   }, []);
+
+  useEffect(() => {
+    if (!isLocalBackend) return;
+    refreshManifests();
+  }, [isLocalBackend, refreshManifests]);
+
+  useEffect(() => {
+    if (!isLocalBackend) return;
+    if (!selectedManifestId) {
+      setManifestDetail(null);
+      setCanvasActionError(null);
+      return;
+    }
+    fetchManifestDetail(selectedManifestId);
+  }, [fetchManifestDetail, isLocalBackend, selectedManifestId]);
 
   useEffect(() => {
     async function fetchInfo(relativePath) {
@@ -215,6 +851,13 @@ export default function App() {
     );
   }, [selectedInfo]);
 
+  const canAddCanvas = Boolean(manifestDetail) && availableImages.length > 0;
+  const disableAddReason = !canAddCanvas && manifestDetail
+    ? availableImages.length === 0
+      ? "Process at least one IIIF image to add canvases."
+      : null
+    : null;
+
   return (
     <main className="layout">
       <header className="layout-header">
@@ -240,6 +883,48 @@ export default function App() {
           ))}
         </div>
       )}
+      {isLocalBackend && (
+        <section className="panel manifest-panel">
+          <header className="manifest-panel-header">
+            <h2>Presentation Manifests</h2>
+            <button type="button" onClick={handleOpenManifestModal}>
+              Add Manifest
+            </button>
+          </header>
+          <div className="panel-body manifest-panel-body">
+            {manifestError && (
+              <div className="status status--error">{manifestError}</div>
+            )}
+            <div className="manifest-content">
+              <div className="manifest-column manifest-column--list">
+                {manifestLoading ? (
+                  <span className="status">Loading manifests…</span>
+                ) : (
+                  <ManifestList
+                    manifests={manifests}
+                    selectedId={selectedManifestId}
+                    onSelect={setSelectedManifestId}
+                  />
+                )}
+              </div>
+              <div className="manifest-column manifest-column--detail">
+                <ManifestDetail
+                  detail={manifestDetail}
+                  loading={manifestDetailLoading}
+                  error={manifestDetailError}
+                  onAddCanvas={handleOpenCanvasModal}
+                  canAddCanvas={canAddCanvas}
+                  onReorderCanvas={handleReorderCanvas}
+                  onRemoveCanvas={handleRemoveCanvas}
+                  canvasSaving={canvasSaving}
+                  canvasActionError={canvasActionError}
+                  disableAddReason={disableAddReason}
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
       <section className="panel viewer-panel">
         {selectedInfo ? (
           viewer
@@ -254,6 +939,25 @@ export default function App() {
           <div className="status status--error">{viewerError}</div>
         )}
       </section>
+      <ManifestModal
+        open={isManifestModalOpen}
+        onClose={handleCloseManifestModal}
+        onSubmit={handleManifestSubmit}
+        form={manifestForm}
+        onChange={handleManifestFieldChange}
+        submitting={manifestFormSubmitting}
+        error={manifestFormError}
+      />
+      <AddCanvasModal
+        open={isCanvasModalOpen}
+        onClose={handleCloseCanvasModal}
+        onSubmit={handleCanvasSubmit}
+        form={canvasForm}
+        onChange={handleCanvasFieldChange}
+        images={availableImages}
+        submitting={canvasModalSubmitting}
+        error={canvasModalError}
+      />
     </main>
   );
 }

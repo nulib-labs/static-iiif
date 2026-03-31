@@ -58,6 +58,264 @@ main.layout {
   font-size: 0.95rem;
 }
 
+.manifest-panel .panel-body {
+  max-height: none;
+}
+
+.manifest-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.manifest-panel-header button {
+  border: 1px solid #e2e8f0;
+  background: #f1f5f9;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.manifest-panel-header button:hover {
+  background: #e2e8f0;
+}
+
+.manifest-content {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.manifest-column {
+  flex: 1;
+  min-width: 240px;
+}
+
+.manifest-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.manifest-list-item {
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  background: #f8fafc;
+  cursor: pointer;
+  text-align: left;
+}
+
+.manifest-list-item strong {
+  font-size: 0.95rem;
+}
+
+.manifest-list-item span {
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+.manifest-list-item--active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.manifest-detail {
+  border: 1px dashed #e2e8f0;
+  border-radius: 6px;
+  padding: 12px;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.manifest-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.manifest-detail-meta h3 {
+  margin: 0 0 4px;
+}
+
+.manifest-detail-meta code {
+  background: #f8fafc;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  word-break: break-all;
+  display: block;
+}
+
+.manifest-detail-header button {
+  border: 1px solid #1d4ed8;
+  background: #1d4ed8;
+  color: #fff;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.manifest-detail-header button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.manifest-detail-hint {
+  font-size: 0.85rem;
+  color: #94a3b8;
+  margin: 0;
+}
+
+.manifest-detail-placeholder {
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.canvas-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.canvas-list-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.canvas-list-info strong {
+  display: block;
+}
+
+.canvas-list-info span {
+  font-size: 0.8rem;
+  color: #64748b;
+  word-break: break-all;
+}
+
+.canvas-list-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.canvas-list-actions button {
+  border: 1px solid #cbd5f5;
+  background: #fff;
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.canvas-list-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1000;
+}
+
+.modal {
+  background: #fff;
+  border-radius: 8px;
+  padding: 24px;
+  width: min(420px, 90vw);
+  box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.35);
+}
+
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.9rem;
+}
+
+.modal-form input {
+  border: 1px solid #cbd5f5;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 0.95rem;
+}
+
+.modal-form select {
+  border: 1px solid #cbd5f5;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 0.95rem;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.modal-actions button {
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+  background: #f8fafc;
+}
+
+.modal-actions button[type="submit"] {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
+.modal-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.button-secondary {
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.button-secondary:disabled,
+.manifest-panel-header button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .tree-dir {
   font-size: 0.75rem;
   font-weight: 700;

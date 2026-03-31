@@ -9,6 +9,10 @@ const directoryRoots = {
   source: path.join(projectRoot, 'source'),
   output: path.join(projectRoot, 'output'),
 };
+const presentationRoot = path.join(directoryRoots.output, 'presentation');
+const manifestRoot = path.join(presentationRoot, 'manifest');
+const manifestBaseUrl = (process.env.IIIF_BASE_URL || 'http://localhost:5173/iiif/output').replace(/\/$/, '');
+const manifestIdPattern = /^[A-Za-z0-9._-]+$/;
 
 const contentTypes = {
   '.json': 'application/json',
@@ -19,6 +23,139 @@ const contentTypes = {
   '.tif': 'image/tiff',
   '.tiff': 'image/tiff',
 };
+
+async function ensureManifestRoot() {
+  await fsp.mkdir(manifestRoot, { recursive: true });
+}
+
+function sanitizeManifestIdentifier(raw) {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) {
+    throw new Error('Manifest id is required');
+  }
+  if (!manifestIdPattern.test(trimmed)) {
+    throw new Error('Manifest id may only include letters, numbers, periods, underscores, or dashes');
+  }
+  if (trimmed.includes('..')) {
+    throw new Error('Manifest id cannot contain parent directory references');
+  }
+  return trimmed;
+}
+
+function manifestFilePath(identifier) {
+  return path.join(manifestRoot, identifier, 'manifest.json');
+}
+
+async function manifestExists(identifier) {
+  const filePath = manifestFilePath(identifier);
+  try {
+    await fsp.access(filePath);
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function readManifest(identifier) {
+  const filePath = manifestFilePath(identifier);
+  const payload = await fsp.readFile(filePath, 'utf8');
+  return JSON.parse(payload);
+}
+
+async function writeManifest(identifier, manifest) {
+  const filePath = manifestFilePath(identifier);
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  await fsp.writeFile(filePath, JSON.stringify(manifest, null, 2), 'utf8');
+  return filePath;
+}
+
+function manifestSummary(identifier, manifest) {
+  const label = manifest?.label?.none?.[0] || '';
+  return {
+    identifier,
+    label,
+    manifestUrl: manifest?.id || '',
+    relativePath: `presentation/manifest/${identifier}/manifest.json`,
+    itemCount: Array.isArray(manifest?.items) ? manifest.items.length : 0,
+  };
+}
+
+function manifestDetail(identifier, manifest) {
+  return {
+    ...manifestSummary(identifier, manifest),
+    manifest,
+  };
+}
+
+async function listManifestSummaries() {
+  await ensureManifestRoot();
+  let entries = [];
+  try {
+    entries = await fsp.readdir(manifestRoot, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+
+  const summaries = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory())
+      .map(async (entry) => {
+        try {
+          const manifest = await readManifest(entry.name);
+          return manifestSummary(entry.name, manifest);
+        } catch (error) {
+          return null;
+        }
+      }),
+  );
+
+  return summaries.filter(Boolean).sort((a, b) => a.label.localeCompare(b.label) || a.identifier.localeCompare(b.identifier));
+}
+
+async function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk.toString();
+      if (body.length > 1e6) {
+        reject(new Error('Request body too large'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+async function parseJsonBody(req) {
+  const raw = await readRequestBody(req);
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error('Invalid JSON payload');
+  }
+}
+
+function createManifestTemplate({ identifier, label }) {
+  return {
+    '@context': 'http://iiif.io/api/presentation/3/context.json',
+    id: `${manifestBaseUrl}/presentation/manifest/${identifier}/manifest.json`,
+    type: 'Manifest',
+    label: {
+      none: [label],
+    },
+    items: [],
+  };
+}
+
+function sendJson(res, statusCode, payload) {
+  res.statusCode = statusCode;
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(payload));
+}
 
 async function readDirectoryTree(target, base) {
   let entries = [];
@@ -67,8 +204,120 @@ function createApiMiddleware() {
   return async function middleware(req, res, next) {
     if (!req.url) return next();
     try {
-      if (req.url.startsWith('/api/tree')) {
-        const { searchParams } = new URL(req.url, 'http://localhost');
+      const parsedUrl = new URL(req.url, 'http://localhost');
+      const pathname = parsedUrl.pathname;
+      const method = req.method || 'GET';
+      const segments = pathname.split('/').filter(Boolean);
+
+      if (segments[0] === 'api' && segments[1] === 'manifests') {
+        await ensureManifestRoot();
+        if (segments.length === 2) {
+          if (method === 'GET') {
+            const manifests = await listManifestSummaries();
+            sendJson(res, 200, { manifests });
+            return;
+          }
+          if (method === 'POST') {
+            let identifier;
+            try {
+              const body = await parseJsonBody(req);
+              identifier = sanitizeManifestIdentifier(body.identifier || body.id);
+              const label = (body.label || '').trim();
+              if (!label) {
+                sendJson(res, 400, { error: 'Label is required' });
+                return;
+              }
+              const exists = await manifestExists(identifier);
+              if (exists) {
+                sendJson(res, 409, { error: 'A manifest with that id already exists' });
+                return;
+              }
+              const manifest = createManifestTemplate({ identifier, label });
+              await writeManifest(identifier, manifest);
+              sendJson(res, 201, { manifest: manifestDetail(identifier, manifest) });
+              return;
+            } catch (error) {
+              if (error.message === 'Invalid JSON payload') {
+                sendJson(res, 400, { error: error.message });
+                return;
+              }
+              sendJson(res, 400, { error: error.message });
+              return;
+            }
+          }
+          sendJson(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+
+        const identifierSegment = segments[2];
+        if (!identifierSegment) {
+          sendJson(res, 400, { error: 'Manifest id is required' });
+          return;
+        }
+
+        let identifier;
+        try {
+          identifier = sanitizeManifestIdentifier(decodeURIComponent(identifierSegment));
+        } catch (error) {
+          sendJson(res, 400, { error: error.message });
+          return;
+        }
+
+        if (segments.length === 3) {
+          if (method === 'GET') {
+            try {
+              const manifest = await readManifest(identifier);
+              sendJson(res, 200, { manifest: manifestDetail(identifier, manifest) });
+              return;
+            } catch (error) {
+              if (error.code === 'ENOENT') {
+                sendJson(res, 404, { error: 'Manifest not found' });
+                return;
+              }
+              sendJson(res, 500, { error: error.message });
+              return;
+            }
+          }
+          sendJson(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+
+        if (segments.length === 4 && segments[3] === 'items') {
+          if (method === 'PUT') {
+            try {
+              const body = await parseJsonBody(req);
+              if (!Array.isArray(body.items)) {
+                sendJson(res, 400, { error: 'items must be an array' });
+                return;
+              }
+              const manifest = await readManifest(identifier);
+              manifest.items = body.items;
+              await writeManifest(identifier, manifest);
+              sendJson(res, 200, { manifest: manifestDetail(identifier, manifest) });
+              return;
+            } catch (error) {
+              if (error.message === 'Invalid JSON payload') {
+                sendJson(res, 400, { error: error.message });
+                return;
+              }
+              if (error.code === 'ENOENT') {
+                sendJson(res, 404, { error: 'Manifest not found' });
+                return;
+              }
+              sendJson(res, 500, { error: error.message });
+              return;
+            }
+          }
+          sendJson(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+
+        sendJson(res, 404, { error: 'Unknown manifest endpoint' });
+        return;
+      }
+
+      if (pathname.startsWith('/api/tree')) {
+        const { searchParams } = parsedUrl;
         const type = searchParams.get('type');
         const root = directoryRoots[type];
         if (!root) {
@@ -92,16 +341,16 @@ function createApiMiddleware() {
         return;
       }
 
-      if (req.url.startsWith('/iiif/')) {
-        const segments = req.url.replace(/^\/+/u, '').split('/');
-        const scope = segments[1];
+      if (pathname.startsWith('/iiif/')) {
+        const iiifSegments = pathname.replace(/^\/+/u, '').split('/');
+        const scope = iiifSegments[1];
         const root = directoryRoots[scope];
         if (!root) {
           res.statusCode = 404;
           res.end('Not found');
           return;
         }
-        const relativePath = segments.slice(2).join('/');
+        const relativePath = iiifSegments.slice(2).join('/');
         const candidatePath = path.join(root, ...relativePath.split('/'));
         if (!candidatePath.startsWith(root)) {
           res.statusCode = 403;
