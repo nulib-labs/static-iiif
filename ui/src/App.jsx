@@ -14,29 +14,24 @@ const STORAGE_BUCKET = import.meta.env.VITE_STORAGE_BUCKET || "";
 const STORAGE_REGION = import.meta.env.VITE_STORAGE_REGION || import.meta.env.VITE_AWS_REGION || "";
 const STORAGE_IDENTITY_POOL_ID = import.meta.env.VITE_STORAGE_IDENTITY_POOL_ID || "";
 const LOCAL_MANIFEST_API_BASE = "/api/manifests";
-let amplifyConfigured = false;
 
-function configureAmplifyStorage() {
-  if (amplifyConfigured) return;
-  if (STORAGE_BUCKET && STORAGE_REGION) {
-    const config = {
-      Storage: {
-        S3: {
-          bucket: STORAGE_BUCKET,
-          region: STORAGE_REGION,
-        },
+if (STORAGE_BUCKET && STORAGE_REGION) {
+  const config = {
+    Storage: {
+      S3: {
+        bucket: STORAGE_BUCKET,
+        region: STORAGE_REGION,
+      },
+    },
+  };
+  if (STORAGE_IDENTITY_POOL_ID) {
+    config.Auth = {
+      Cognito: {
+        identityPoolId: STORAGE_IDENTITY_POOL_ID,
       },
     };
-    if (STORAGE_IDENTITY_POOL_ID) {
-      config.Auth = {
-        Cognito: {
-          identityPoolId: STORAGE_IDENTITY_POOL_ID,
-        },
-      };
-    }
-    Amplify.configure(config);
-    amplifyConfigured = true;
   }
+  Amplify.configure(config);
 }
 
 const DIRECTORY_TYPES = [
@@ -565,11 +560,6 @@ export default function App() {
   const [canvasModalSubmitting, setCanvasModalSubmitting] = useState(false);
   const [canvasSaving, setCanvasSaving] = useState(false);
   const [canvasActionError, setCanvasActionError] = useState(null);
-  useEffect(() => {
-    if (storageBrowserReady) {
-      configureAmplifyStorage();
-    }
-  }, [storageBrowserReady]);
 
   const availableImages = useMemo(() => {
     if (!isLocalBackend || !trees.output) return [];
