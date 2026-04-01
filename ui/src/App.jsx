@@ -21,15 +21,17 @@ function configureAmplifyStorage() {
   if (STORAGE_BUCKET && STORAGE_REGION) {
     const config = {
       Storage: {
-        bucket: STORAGE_BUCKET,
-        region: STORAGE_REGION,
-        defaultAccessLevel: "public",
+        S3: {
+          bucket: STORAGE_BUCKET,
+          region: STORAGE_REGION,
+        },
       },
     };
     if (STORAGE_IDENTITY_POOL_ID) {
       config.Auth = {
-        identityPoolId: STORAGE_IDENTITY_POOL_ID,
-        region: STORAGE_REGION,
+        Cognito: {
+          identityPoolId: STORAGE_IDENTITY_POOL_ID,
+        },
       };
     }
     Amplify.configure(config);
