@@ -33,6 +33,8 @@ Globals:
 Resources:
   SourceBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     DependsOn: IIIFImageFunctionS3Permission
     Properties:
       BucketName: !Sub "${AWS::StackName}-source"
@@ -47,8 +49,10 @@ Resources:
             Function: !GetAtt IIIFImageFunction.Arn
 
   IIIFBucket:
-    Type: AWS::S3::Bucket 
-    Properties: 
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
       BucketName: !Sub "${AWS::StackName}-iiif"
       PublicAccessBlockConfiguration:
         BlockPublicAcls: false

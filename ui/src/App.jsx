@@ -18,18 +18,21 @@ let amplifyConfigured = false;
 
 function configureAmplifyStorage() {
   if (amplifyConfigured) return;
-  if (STORAGE_BUCKET && STORAGE_REGION && STORAGE_IDENTITY_POOL_ID) {
-    Amplify.configure({
-      Auth: {
-        identityPoolId: STORAGE_IDENTITY_POOL_ID,
-        region: STORAGE_REGION,
-      },
+  if (STORAGE_BUCKET && STORAGE_REGION) {
+    const config = {
       Storage: {
         bucket: STORAGE_BUCKET,
         region: STORAGE_REGION,
         defaultAccessLevel: "public",
       },
-    });
+    };
+    if (STORAGE_IDENTITY_POOL_ID) {
+      config.Auth = {
+        identityPoolId: STORAGE_IDENTITY_POOL_ID,
+        region: STORAGE_REGION,
+      };
+    }
+    Amplify.configure(config);
     amplifyConfigured = true;
   }
 }
@@ -227,9 +230,8 @@ function AwsStorageBrowserPanel({ready}) {
           </div>
         ) : (
           <div className="storage-browser-placeholder">
-            Provide `VITE_STORAGE_BUCKET`, `VITE_STORAGE_REGION`, and
-            `VITE_STORAGE_IDENTITY_POOL_ID` to enable the Amplify Storage
-            Browser.
+            Provide `VITE_STORAGE_BUCKET` and `VITE_STORAGE_REGION` to enable
+            the Amplify Storage Browser.
           </div>
         )}
       </div>
@@ -537,9 +539,7 @@ export default function App() {
   const isAwsBackend = BACKEND === "aws";
   const manifestApiBase = isAwsBackend ? REMOTE_MANIFEST_API_BASE : LOCAL_MANIFEST_API_BASE;
   const manifestApiAvailable = Boolean(manifestApiBase);
-  const storageBrowserReady = Boolean(
-    STORAGE_BUCKET && STORAGE_REGION && STORAGE_IDENTITY_POOL_ID,
-  );
+  const storageBrowserReady = Boolean(STORAGE_BUCKET && STORAGE_REGION);
   const [trees, setTrees] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);

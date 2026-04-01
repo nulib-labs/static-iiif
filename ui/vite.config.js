@@ -373,6 +373,10 @@ export default defineConfig({
   define: {
     'import.meta.env.VITE_BACKEND': JSON.stringify(process.env.VITE_BACKEND || 'local'),
     'import.meta.env.VITE_IIIF_BASE_URL': JSON.stringify(process.env.VITE_IIIF_BASE_URL || ''),
+    'import.meta.env.VITE_MANIFEST_API_URL': JSON.stringify(process.env.VITE_MANIFEST_API_URL || ''),
+    'import.meta.env.VITE_STORAGE_BUCKET': JSON.stringify(process.env.VITE_STORAGE_BUCKET || ''),
+    'import.meta.env.VITE_STORAGE_REGION': JSON.stringify(process.env.VITE_STORAGE_REGION || ''),
+    'import.meta.env.VITE_STORAGE_IDENTITY_POOL_ID': JSON.stringify(process.env.VITE_STORAGE_IDENTITY_POOL_ID || ''),
   },
   server: {
     fs: {
