@@ -9,7 +9,7 @@ const {
   sanitizeManifestIdentifier,
   manifestObjectKey,
   createManifestTemplate,
-} = require("../../../shared/manifest");
+} = require("./shared/manifest");
 
 const s3 = new S3Client({});
 const bucket = process.env.IIIF_BUCKET;

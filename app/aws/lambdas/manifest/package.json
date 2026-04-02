@@ -6,8 +6,5 @@
   "license": "ISC",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.705.0"
-  },
-  "devDependencies": {
-    "esbuild": "^0.24.0"
   }
 }
