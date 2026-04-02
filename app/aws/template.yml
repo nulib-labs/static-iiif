@@ -173,10 +173,19 @@ Resources:
           - PUT
           - OPTIONS
         AllowHeaders:
-          - "*"
+          - "Content-Type"
+          - "Authorization"
 
   ManifestFunction:
     Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: false
+        Target: "node22"
+        Sourcemap: false
+        EntryPoints:
+          - index.js
     Properties:
       FunctionName: !Sub "${AWS::StackName}-manifest-api"
       CodeUri: lambdas/manifest/

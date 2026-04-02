@@ -16,7 +16,7 @@ const bucket = process.env.IIIF_BUCKET;
 const manifestBaseUrl = (process.env.IIIF_BASE_URL || "").replace(/\/$/, "");
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "*",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
 };
 
