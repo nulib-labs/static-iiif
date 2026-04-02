@@ -14,7 +14,7 @@ const LOCATIONS = [
   {
     id: "iiif-images",
     bucket: STORAGE_BUCKET,
-    prefix: "iiif/output/",
+    prefix: "image/",
     permissions: ["list", "get"],
     type: "PREFIX",
   },
