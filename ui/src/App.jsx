@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {Amplify} from "aws-amplify";
 import {fetchAuthSession} from "aws-amplify/auth";
-import {StorageBrowser} from "@aws-amplify/ui-react-storage";
+import {StorageBrowser} from "./storageBrowser";
 import Image from "@samvera/clover-iiif/image";
 import "@aws-amplify/ui-react/styles.css";
 import "@aws-amplify/ui-react-storage/styles.css";
