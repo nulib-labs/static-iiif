@@ -377,6 +377,8 @@ export default defineConfig({
     'import.meta.env.VITE_STORAGE_BUCKET': JSON.stringify(process.env.VITE_STORAGE_BUCKET || ''),
     'import.meta.env.VITE_STORAGE_REGION': JSON.stringify(process.env.VITE_STORAGE_REGION || ''),
     'import.meta.env.VITE_STORAGE_IDENTITY_POOL_ID': JSON.stringify(process.env.VITE_STORAGE_IDENTITY_POOL_ID || ''),
+    'import.meta.env.VITE_COGNITO_USER_POOL_ID': JSON.stringify(process.env.VITE_COGNITO_USER_POOL_ID || ''),
+    'import.meta.env.VITE_COGNITO_CLIENT_ID': JSON.stringify(process.env.VITE_COGNITO_CLIENT_ID || ''),
   },
   server: {
     fs: {

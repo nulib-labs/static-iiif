@@ -58,5 +58,12 @@ Use CommonJS modules (`require`/`module.exports`) and 2-space indentation in all
 ## Testing Guidelines
 Add tests alongside code under `app/**/__tests__/` with filenames ending in `.test.js`. Use Node's native runner (`node --test`); wire it into `npm test` once implemented. Keep fixtures small under `app/<module>/__fixtures__`. Any new tiling or presentation feature should include at least a smoke test and validation against a sample IIIF document.
 
+## Skills
+Reusable agent skill definitions live in `skills/`. Reference the relevant skill file when scaffolding or extending a module.
+
+| Skill file | Description |
+|---|---|
+| `skills/IIIF_IMAGE_SKILL.md` | Level 0 IIIF Image API 3.0 tiler — tile math, URI layout, `info.json` construction |
+
 ## Commit & Pull Request Guidelines
 Use Conventional Commits (`feat:`, `fix:`, `chore:`, etc.) from the start. Reference related GitHub issues in the PR body. Include manual verification steps (`npm test`, sample render) so reviewers can reproduce. Keep PRs focused; split unrelated work into separate branches.

@@ -81,9 +81,89 @@ Resources:
             Action: s3:GetObject
             Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/*"
 
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-users"
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "${AWS::StackName}-web-client"
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  CognitoIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: !Sub "${AWS::StackName}-identity"
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref CognitoUserPoolClient
+          ProviderName: !GetAtt CognitoUserPool.ProviderName
+
+  CognitoAuthenticatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "cognito-identity.amazonaws.com:aud": !Ref CognitoIdentityPool
+              "ForAnyValue:StringLike":
+                "cognito-identity.amazonaws.com:amr": authenticated
+      Policies:
+        - PolicyName: IIIFBucketRead
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/*"
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif"
+
+  CognitoIdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref CognitoIdentityPool
+      Roles:
+        authenticated: !GetAtt CognitoAuthenticatedRole.Arn
+
   ManifestHttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPool}"
+              audience:
+                - !Ref CognitoUserPoolClient
+            IdentitySource: $request.header.Authorization
       CorsConfiguration:
         AllowOrigins:
           - "*"
@@ -201,7 +281,11 @@ Resources:
         - Name: VITE_STORAGE_REGION
           Value: !Ref AWS::Region
         - Name: VITE_STORAGE_IDENTITY_POOL_ID
-          Value: ""
+          Value: !Ref CognitoIdentityPool
+        - Name: VITE_COGNITO_USER_POOL_ID
+          Value: !Ref CognitoUserPool
+        - Name: VITE_COGNITO_CLIENT_ID
+          Value: !Ref CognitoUserPoolClient
 
   AmplifyBranch:
     Type: AWS::Amplify::Branch
@@ -232,3 +316,9 @@ Outputs:
     Value: !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
   ManifestApiUrl:
     Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  CognitoUserPoolId:
+    Value: !Ref CognitoUserPool
+  CognitoClientId:
+    Value: !Ref CognitoUserPoolClient
+  CognitoIdentityPoolId:
+    Value: !Ref CognitoIdentityPool

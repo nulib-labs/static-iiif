@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {Amplify} from "aws-amplify";
+import {fetchAuthSession} from "aws-amplify/auth";
 import {StorageBrowser} from "@aws-amplify/ui-react-storage";
 import Image from "@samvera/clover-iiif/image";
 import "@aws-amplify/ui-react/styles.css";
@@ -13,25 +14,36 @@ const REMOTE_MANIFEST_API_BASE = (import.meta.env.VITE_MANIFEST_API_URL || "").r
 const STORAGE_BUCKET = import.meta.env.VITE_STORAGE_BUCKET || "";
 const STORAGE_REGION = import.meta.env.VITE_STORAGE_REGION || import.meta.env.VITE_AWS_REGION || "";
 const STORAGE_IDENTITY_POOL_ID = import.meta.env.VITE_STORAGE_IDENTITY_POOL_ID || "";
+const COGNITO_USER_POOL_ID = import.meta.env.VITE_COGNITO_USER_POOL_ID || "";
+const COGNITO_CLIENT_ID = import.meta.env.VITE_COGNITO_CLIENT_ID || "";
 const LOCAL_MANIFEST_API_BASE = "/api/manifests";
 
-if (STORAGE_BUCKET && STORAGE_REGION) {
-  const config = {
+if (BACKEND === "aws" && STORAGE_BUCKET && STORAGE_REGION) {
+  Amplify.configure({
+    Auth: {
+      Cognito: {
+        userPoolId: COGNITO_USER_POOL_ID,
+        userPoolClientId: COGNITO_CLIENT_ID,
+        identityPoolId: STORAGE_IDENTITY_POOL_ID,
+      },
+    },
     Storage: {
       S3: {
         bucket: STORAGE_BUCKET,
         region: STORAGE_REGION,
       },
     },
-  };
-  if (STORAGE_IDENTITY_POOL_ID) {
-    config.Auth = {
-      Cognito: {
-        identityPoolId: STORAGE_IDENTITY_POOL_ID,
-      },
-    };
+  });
+}
+
+async function authHeaders() {
+  if (BACKEND !== "aws") return {};
+  try {
+    const { tokens } = await fetchAuthSession();
+    return tokens?.idToken ? { Authorization: tokens.idToken.toString() } : {};
+  } catch {
+    return {};
   }
-  Amplify.configure(config);
 }
 
 const DIRECTORY_TYPES = [
@@ -531,7 +543,7 @@ function AddCanvasModal({
   );
 }
 
-export default function App() {
+export default function App({ signOut }) {
   const isLocalBackend = BACKEND === "local";
   const isAwsBackend = BACKEND === "aws";
   const manifestApiBase = isAwsBackend ? REMOTE_MANIFEST_API_BASE : LOCAL_MANIFEST_API_BASE;
@@ -596,7 +608,7 @@ export default function App() {
       if (!endpoint) {
         throw new Error("Manifest API unavailable");
       }
-      const response = await fetch(endpoint);
+      const response = await fetch(endpoint, { headers: await authHeaders() });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.error || "Unable to load manifests");
@@ -622,7 +634,7 @@ export default function App() {
       if (!endpoint) {
         throw new Error("Manifest API unavailable");
       }
-      const response = await fetch(endpoint);
+      const response = await fetch(endpoint, { headers: await authHeaders() });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.error || "Unable to load manifest");
@@ -701,7 +713,7 @@ export default function App() {
       }
       const response = await fetch(endpoint, {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
+        headers: {"Content-Type": "application/json", ...(await authHeaders())},
         body: JSON.stringify(payload),
       });
       const data = await response.json().catch(() => ({}));
@@ -759,7 +771,7 @@ export default function App() {
         }
         const response = await fetch(endpoint, {
           method: "PUT",
-          headers: {"Content-Type": "application/json"},
+          headers: {"Content-Type": "application/json", ...(await authHeaders())},
           body: JSON.stringify({items}),
         });
         const data = await response.json().catch(() => ({}));
@@ -1011,6 +1023,9 @@ export default function App() {
         </p>
         {loading && <span className="status">Loading directories…</span>}
         {error && <span className="status status--error">{error}</span>}
+        {isAwsBackend && signOut && (
+          <button type="button" onClick={signOut} className="signout-button">Sign out</button>
+        )}
       </header>
       {BACKEND === "aws" ? (
         <div className="columns">
