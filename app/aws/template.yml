@@ -185,10 +185,12 @@ Resources:
         Target: "node22"
         Sourcemap: false
         EntryPoints:
-          - index.js
+          - aws/lambdas/manifest/index.js
+        External:
+          - "@aws-sdk/*"
     Properties:
       FunctionName: !Sub "${AWS::StackName}-manifest-api"
-      CodeUri: lambdas/manifest/
+      CodeUri: ../
       Handler: index.handler
       Policies:
         - Statement:
