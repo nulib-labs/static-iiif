@@ -15,10 +15,6 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node app/start.js"
-  },
-  "dependencies": {
-    "sharp": "^0.34.5"
+    "test": "echo \"Error: no test specified\" && exit 1"
   }
 }

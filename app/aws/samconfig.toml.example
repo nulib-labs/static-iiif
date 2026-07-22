@@ -1,7 +1,10 @@
 version = 0.1
 
 [default.deploy.parameters]
-stack_name = "my-dev-iiif-tiler"
+# Pick a stack name unique to you — this becomes your personal dev stack.
+# e.g. "jsmith-dev-static-iiif". Everyone on the team deploys their own copy
+# of this stack rather than sharing one.
+stack_name = "<your-username>-dev-static-iiif"
 resolve_s3 = true
 region = "us-east-1"
 capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"

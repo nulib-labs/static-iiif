@@ -270,8 +270,8 @@ Resources:
                 - npm ci --prefix ui
             build:
               commands:
-                - echo "VITE_BACKEND=$VITE_BACKEND VITE_IIIF_BASE_URL=$VITE_IIIF_BASE_URL"
-                - printf 'VITE_BACKEND=aws\nVITE_IIIF_BASE_URL=%s\n' "$VITE_IIIF_BASE_URL" > ui/.env.production
+                - echo "VITE_IIIF_BASE_URL=$VITE_IIIF_BASE_URL"
+                - printf 'VITE_IIIF_BASE_URL=%s\n' "$VITE_IIIF_BASE_URL" > ui/.env.production
                 - npm run build --prefix ui
           artifacts:
             baseDirectory: ui/dist
@@ -281,8 +281,6 @@ Resources:
             paths:
               - ui/node_modules/**/*
       EnvironmentVariables:
-        - Name: VITE_BACKEND
-          Value: aws
         - Name: VITE_IIIF_BASE_URL
           Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
         - Name: VITE_MANIFEST_API_URL
