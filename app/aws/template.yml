@@ -289,6 +289,10 @@ Resources:
       Name: !Sub "${AWS::StackName}-ui"
       Repository: !Ref GitHubRepo
       OauthToken: !Ref GitHubOAuthToken
+      CustomRules:
+        - Source: "/<*>"
+          Target: "/index.html"
+          Status: "200"
       BuildSpec: |
         version: 1
         frontend:

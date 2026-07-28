@@ -64,17 +64,6 @@ main.layout {
   font-size: 0.9rem;
 }
 
-.manifest-content {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.manifest-column {
-  flex: 1;
-  min-width: 240px;
-}
-
 .manifest-list {
   list-style: none;
   padding: 0;

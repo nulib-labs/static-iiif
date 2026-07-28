@@ -1,8 +1,10 @@
 import {useCallback, useEffect, useState} from "react";
+import {useNavigate, useParams} from "react-router-dom";
 import {Amplify} from "aws-amplify";
 import {fetchAuthSession} from "aws-amplify/auth";
 import {list} from "aws-amplify/storage";
 import {StorageBrowser} from "./storageBrowser";
+import AssetThumbnails from "./components/AssetThumbnails";
 import CloverViewer from "@samvera/clover-iiif/viewer";
 import {
   Box,
@@ -186,6 +188,7 @@ function ManifestList({manifests, selectedId, onSelect}) {
                 <Text size="1" color="gray">
                   {canvasCount} {canvasCount === 1 ? "asset" : "assets"}
                 </Text>
+                <AssetThumbnails services={manifest.thumbnails} size={32} />
               </Flex>
             </button>
           </Card>
@@ -506,13 +509,146 @@ function AddCanvasModal({open, onClose, onSubmit, form, onChange, submitting, er
   );
 }
 
+function WorksListPanel({
+  manifestApiAvailable,
+  manifestError,
+  manifestLoading,
+  manifests,
+  selectedManifestId,
+  onSelectWork,
+  onOpenManifestModal,
+}) {
+  return (
+    <Flex direction="column" gap="5">
+      <Button
+        type="button"
+        size="4"
+        style={{alignSelf: "flex-start"}}
+        onClick={onOpenManifestModal}
+        disabled={!manifestApiAvailable}
+      >
+        Add Work
+      </Button>
+      <Card size="3" className="panel manifest-panel">
+        <Box className="panel-body manifest-panel-body">
+          {!manifestApiAvailable && (
+            <Callout.Root color="red" size="1" mb="3">
+              <Callout.Text>
+                Work API URL is not configured. Update VITE_MANIFEST_API_URL to point at the deployed endpoint.
+              </Callout.Text>
+            </Callout.Root>
+          )}
+          {manifestError && manifestApiAvailable && (
+            <Callout.Root color="red" size="1" mb="3">
+              <Callout.Text>{manifestError}</Callout.Text>
+            </Callout.Root>
+          )}
+          {manifestLoading ? (
+            <Text as="p" size="2" color="gray">Loading works…</Text>
+          ) : (
+            <ManifestList
+              manifests={manifests}
+              selectedId={selectedManifestId}
+              onSelect={onSelectWork}
+            />
+          )}
+        </Box>
+      </Card>
+    </Flex>
+  );
+}
+
+function WorkDetailPanel({
+  onBack,
+  manifestDetail,
+  manifestDetailLoading,
+  manifestDetailError,
+  onAddCanvas,
+  canAddCanvas,
+  onReorderCanvas,
+  onRemoveCanvas,
+  canvasSaving,
+  canvasActionError,
+  disableAddReason,
+}) {
+  return (
+    <Flex direction="column" gap="5">
+      <Button type="button" variant="soft" color="gray" style={{alignSelf: "flex-start"}} onClick={onBack}>
+        ← Works
+      </Button>
+      <Card size="3" className="panel manifest-panel">
+        <Box className="panel-body manifest-panel-body">
+          <ManifestDetail
+            detail={manifestDetail}
+            loading={manifestDetailLoading}
+            error={manifestDetailError}
+            onAddCanvas={onAddCanvas}
+            canAddCanvas={canAddCanvas}
+            onReorderCanvas={onReorderCanvas}
+            onRemoveCanvas={onRemoveCanvas}
+            canvasSaving={canvasSaving}
+            canvasActionError={canvasActionError}
+            disableAddReason={disableAddReason}
+          />
+        </Box>
+      </Card>
+      <Card size="3" className="panel viewer-panel">
+        {manifestDetailLoading ? (
+          <Text as="p" color="gray" className="viewer-placeholder">Loading work…</Text>
+        ) : manifestDetail ? (
+          <Flex direction="column" gap="3" className="viewer">
+            <Box
+              className="viewer-stage"
+              style={{
+                width: "100%",
+                height: "60vh",
+              }}
+            >
+              <CloverViewer
+                key={manifestDetail.identifier}
+                iiifContent={manifestDetail.manifest}
+              />
+            </Box>
+          </Flex>
+        ) : (
+          <Text as="p" color="gray" className="viewer-placeholder">
+            Select a work above to preview it here.
+          </Text>
+        )}
+        {manifestDetailError && (
+          <Callout.Root color="red" size="1" mt="3">
+            <Callout.Text>{manifestDetailError}</Callout.Text>
+          </Callout.Root>
+        )}
+      </Card>
+    </Flex>
+  );
+}
+
 export default function App({ signOut }) {
+  const {tab, workId} = useParams();
+  const navigate = useNavigate();
+  const activeTab = tab === "assets" ? "assets" : "works";
+  const selectedManifestId = activeTab === "works" && workId ? decodeURIComponent(workId) : null;
+
+  const selectWork = useCallback(
+    (identifier) => {
+      navigate(identifier ? `/works/${encodeURIComponent(identifier)}` : "/works");
+    },
+    [navigate],
+  );
+
+  useEffect(() => {
+    if (tab !== "works" && tab !== "assets") {
+      navigate("/works", {replace: true});
+    }
+  }, [tab, navigate]);
+
   const manifestApiAvailable = Boolean(MANIFEST_API_BASE);
   const storageBrowserReady = Boolean(STORAGE_BUCKET && SOURCE_BUCKET && STORAGE_REGION);
   const [manifests, setManifests] = useState([]);
   const [manifestLoading, setManifestLoading] = useState(manifestApiAvailable);
   const [manifestError, setManifestError] = useState(null);
-  const [selectedManifestId, setSelectedManifestId] = useState(null);
   const [manifestDetail, setManifestDetail] = useState(null);
   const [manifestDetailLoading, setManifestDetailLoading] = useState(false);
   const [manifestDetailError, setManifestDetailError] = useState(null);
@@ -650,7 +786,7 @@ export default function App({ signOut }) {
         throw new Error(data.error || "Unable to create work");
       }
       await refreshManifests();
-      setSelectedManifestId(data.manifest?.identifier || payload.identifier);
+      selectWork(data.manifest?.identifier || payload.identifier);
       setManifestModalOpen(false);
     } catch (err) {
       setManifestFormError(err.message);
@@ -818,96 +954,38 @@ export default function App({ signOut }) {
           )}
         </Flex>
       </Flex>
-      <Tabs.Root defaultValue="works">
+      <Tabs.Root value={activeTab} onValueChange={(value) => navigate(`/${value}`)}>
         <Tabs.List size="2" className="tabs-large">
           <Tabs.Trigger value="works">Works</Tabs.Trigger>
           <Tabs.Trigger value="assets">Assets</Tabs.Trigger>
         </Tabs.List>
         <Box pt="5">
           <Tabs.Content value="works">
-            <Flex direction="column" gap="5">
-              <Button
-                type="button"
-                size="4"
-                style={{alignSelf: "flex-start"}}
-                onClick={handleOpenManifestModal}
-                disabled={!manifestApiAvailable}
-              >
-                Add Work
-              </Button>
-              <Card size="3" className="panel manifest-panel">
-                <Box className="panel-body manifest-panel-body">
-                  {!manifestApiAvailable && (
-                    <Callout.Root color="red" size="1" mb="3">
-                      <Callout.Text>
-                        Work API URL is not configured. Update VITE_MANIFEST_API_URL to point at the deployed endpoint.
-                      </Callout.Text>
-                    </Callout.Root>
-                  )}
-                  {manifestError && manifestApiAvailable && (
-                    <Callout.Root color="red" size="1" mb="3">
-                      <Callout.Text>{manifestError}</Callout.Text>
-                    </Callout.Root>
-                  )}
-                  <Flex gap="4" wrap="wrap" className="manifest-content">
-                    <Box className="manifest-column manifest-column--list">
-                      {manifestLoading ? (
-                        <Text as="p" size="2" color="gray">Loading works…</Text>
-                      ) : (
-                        <ManifestList
-                          manifests={manifests}
-                          selectedId={selectedManifestId}
-                          onSelect={setSelectedManifestId}
-                        />
-                      )}
-                    </Box>
-                    <Box className="manifest-column manifest-column--detail">
-                      <ManifestDetail
-                        detail={manifestDetail}
-                        loading={manifestDetailLoading}
-                        error={manifestDetailError}
-                        onAddCanvas={handleOpenCanvasModal}
-                        canAddCanvas={canAddCanvas}
-                        onReorderCanvas={handleReorderCanvas}
-                        onRemoveCanvas={handleRemoveCanvas}
-                        canvasSaving={canvasSaving}
-                        canvasActionError={canvasActionError}
-                        disableAddReason={disableAddReason}
-                      />
-                    </Box>
-                  </Flex>
-                </Box>
-              </Card>
-              <Card size="3" className="panel viewer-panel">
-                {manifestDetailLoading ? (
-                  <Text as="p" color="gray" className="viewer-placeholder">Loading work…</Text>
-                ) : manifestDetail ? (
-                  <Flex direction="column" gap="3" className="viewer">
-                    <Box
-                      className="viewer-stage"
-                      style={{
-                        width: "100%",
-                        height: "60vh",
-                      }}
-                    >
-                      <CloverViewer
-                        key={manifestDetail.identifier}
-                        iiifContent={manifestDetail.manifest}
-                      />
-                    </Box>
-                  </Flex>
-                ) : (
-                  <Text as="p" color="gray" className="viewer-placeholder">
-                    Select a work above to preview it here.
-                  </Text>
-                )}
-                {manifestDetailError && (
-                  <Callout.Root color="red" size="1" mt="3">
-                    <Callout.Text>{manifestDetailError}</Callout.Text>
-                  </Callout.Root>
-                )}
-              </Card>
-            </Flex>
+            {selectedManifestId ? (
+              <WorkDetailPanel
+                onBack={() => selectWork(null)}
+                manifestDetail={manifestDetail}
+                manifestDetailLoading={manifestDetailLoading}
+                manifestDetailError={manifestDetailError}
+                onAddCanvas={handleOpenCanvasModal}
+                canAddCanvas={canAddCanvas}
+                onReorderCanvas={handleReorderCanvas}
+                onRemoveCanvas={handleRemoveCanvas}
+                canvasSaving={canvasSaving}
+                canvasActionError={canvasActionError}
+                disableAddReason={disableAddReason}
+              />
+            ) : (
+              <WorksListPanel
+                manifestApiAvailable={manifestApiAvailable}
+                manifestError={manifestError}
+                manifestLoading={manifestLoading}
+                manifests={manifests}
+                selectedManifestId={selectedManifestId}
+                onSelectWork={selectWork}
+                onOpenManifestModal={handleOpenManifestModal}
+              />
+            )}
           </Tabs.Content>
           <Tabs.Content value="assets">
             <div className="columns">

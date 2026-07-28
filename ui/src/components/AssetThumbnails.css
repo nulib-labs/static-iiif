@@ -1,0 +1,14 @@
+.asset-thumbnails {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.asset-thumbnails__item {
+  display: block;
+  width: auto;
+  border-radius: 4px;
+  border: 1px solid #e2e8f0;
+  object-fit: cover;
+  background: #f1f5f9;
+}

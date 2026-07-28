@@ -31,14 +31,21 @@ function jsonResponse(statusCode, payload) {
   };
 }
 
+function canvasThumbnailService(canvas) {
+  const service = canvas?.items?.[0]?.items?.[0]?.body?.service?.[0];
+  return service?.id || null;
+}
+
 function manifestSummary(identifier, manifest) {
   const label = manifest?.label?.none?.[0] || "";
+  const items = Array.isArray(manifest?.items) ? manifest.items : [];
   return {
     identifier,
     label,
     manifestUrl: manifest?.id || "",
     relativePath: manifestObjectKey(identifier),
-    itemCount: Array.isArray(manifest?.items) ? manifest.items.length : 0,
+    itemCount: items.length,
+    thumbnails: items.map(canvasThumbnailService).filter(Boolean),
   };
 }
 
