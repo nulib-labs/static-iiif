@@ -28,7 +28,7 @@ Globals:
       Variables: 
         SOURCE_BUCKET: !Sub "${AWS::StackName}-source"
         IIIF_BUCKET: !Sub "${AWS::StackName}-iiif"
-        IIIF_BASE_URL: !Sub "https://${AWS::StackName}-iiif.s3.${AWS::Region}.amazonaws.com/iiif/output"
+        IIIF_BASE_URL: !Sub "https://${AWS::StackName}-iiif.s3.${AWS::Region}.amazonaws.com"
 
 Resources:
   SourceBucket:
