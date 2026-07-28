@@ -2,12 +2,23 @@ import {useCallback, useEffect, useState} from "react";
 import {Amplify} from "aws-amplify";
 import {fetchAuthSession} from "aws-amplify/auth";
 import {StorageBrowser} from "./storageBrowser";
-import Image from "@samvera/clover-iiif/image";
+import CloverViewer from "@samvera/clover-iiif/viewer";
+import {
+  Box,
+  Flex,
+  Card,
+  Heading,
+  Text,
+  Button,
+  TextField,
+  Dialog,
+  Callout,
+} from "@radix-ui/themes";
 import "@aws-amplify/ui-react/styles.css";
 import "@aws-amplify/ui-react-storage/styles.css";
+import "@radix-ui/themes/styles.css";
 import "./App.css";
 
-const IIIF_BASE_URL = (import.meta.env.VITE_IIIF_BASE_URL || "").replace(/\/$/, "");
 const MANIFEST_API_BASE = (import.meta.env.VITE_MANIFEST_API_URL || "").replace(/\/$/, "");
 const STORAGE_BUCKET = import.meta.env.VITE_STORAGE_BUCKET || "";
 const STORAGE_REGION = import.meta.env.VITE_STORAGE_REGION || import.meta.env.VITE_AWS_REGION || "";
@@ -108,66 +119,33 @@ function buildCanvasResource(manifest, imageInfo, label) {
   return canvas;
 }
 
-function ImageLookup({onSelect}) {
-  const [value, setValue] = useState(IIIF_BASE_URL ? `${IIIF_BASE_URL}/` : "");
-
-  function handleSubmit(e) {
-    e.preventDefault();
-    const url = value.trim().replace(/\/info\.json$/, "").replace(/\/$/, "");
-    if (url) onSelect(url);
-  }
-
-  return (
-    <section className="panel">
-      <header>
-        <h2>IIIF Image URL</h2>
-      </header>
-      <div className="panel-body">
-        <form onSubmit={handleSubmit} className="url-form">
-          <input
-            type="text"
-            className="url-input"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="https://…/iiif/2/image%2Fidentifier"
-            spellCheck={false}
-          />
-          <button type="submit">Preview</button>
-        </form>
-      </div>
-    </section>
-  );
-}
-
 function StorageBrowserPanel({ready}) {
   return (
-    <section className="panel storage-panel">
-      <header>
-        <h2>S3 Storage Browser</h2>
-      </header>
-      <div className="panel-body storage-panel-body">
+    <Card size="3" className="panel storage-panel">
+      <Heading as="h2" size="4" mb="3">S3 Storage Browser</Heading>
+      <Box className="panel-body storage-panel-body">
         {ready ? (
-          <div className="storage-browser-wrapper">
+          <Box className="storage-browser-wrapper">
             <StorageBrowser />
-          </div>
+          </Box>
         ) : (
-          <div className="storage-browser-placeholder">
+          <Text as="p" size="2" color="gray">
             Provide `VITE_STORAGE_BUCKET` and `VITE_STORAGE_REGION` to enable
             the Amplify Storage Browser.
-          </div>
+          </Text>
         )}
-      </div>
-    </section>
+      </Box>
+    </Card>
   );
 }
 
 function ManifestList({manifests, selectedId, onSelect}) {
   if (!manifests || manifests.length === 0) {
-    return <div className="tree-empty">No manifests yet.</div>;
+    return <Text as="p" size="2" color="gray" className="tree-empty">No manifests yet.</Text>;
   }
 
   return (
-    <ul className="manifest-list">
+    <Flex direction="column" gap="2" className="manifest-list">
       {manifests.map((manifest) => {
         const isActive = manifest.identifier === selectedId;
         const canvasCount = Number.isFinite(manifest.itemCount)
@@ -176,22 +154,25 @@ function ManifestList({manifests, selectedId, onSelect}) {
             ? manifest.manifest.items.length
             : 0;
         return (
-          <li key={manifest.identifier}>
-            <button
-              type="button"
-              className={`manifest-list-item ${isActive ? "manifest-list-item--active" : ""}`}
-              onClick={() => onSelect(manifest.identifier)}
-            >
-              <strong>{manifest.label || manifest.identifier}</strong>
-              <span>ID: {manifest.identifier}</span>
-              <span>
-                {canvasCount} {canvasCount === 1 ? "canvas" : "canvases"}
-              </span>
+          <Card
+            key={manifest.identifier}
+            asChild
+            variant={isActive ? "classic" : "surface"}
+            className={`manifest-list-item ${isActive ? "manifest-list-item--active" : ""}`}
+          >
+            <button type="button" onClick={() => onSelect(manifest.identifier)}>
+              <Flex direction="column" align="start" gap="1">
+                <Text weight="bold" size="2">{manifest.label || manifest.identifier}</Text>
+                <Text size="1" color="gray">ID: {manifest.identifier}</Text>
+                <Text size="1" color="gray">
+                  {canvasCount} {canvasCount === 1 ? "canvas" : "canvases"}
+                </Text>
+              </Flex>
             </button>
-          </li>
+          </Card>
         );
       })}
-    </ul>
+    </Flex>
   );
 }
 
@@ -208,15 +189,19 @@ function ManifestDetail({
   disableAddReason,
 }) {
   if (loading) {
-    return <div className="manifest-detail-placeholder">Loading manifest…</div>;
+    return <Text as="p" color="gray" className="manifest-detail-placeholder">Loading manifest…</Text>;
   }
 
   if (error) {
-    return <div className="status status--error">{error}</div>;
+    return (
+      <Callout.Root color="red" size="1">
+        <Callout.Text>{error}</Callout.Text>
+      </Callout.Root>
+    );
   }
 
   if (!detail) {
-    return <div className="manifest-detail-placeholder">Select a manifest to edit canvases.</div>;
+    return <Text as="p" color="gray" className="manifest-detail-placeholder">Select a manifest to edit canvases.</Text>;
   }
 
   const canvases = Array.isArray(detail.manifest?.items)
@@ -224,196 +209,208 @@ function ManifestDetail({
     : [];
 
   return (
-    <div className="manifest-detail">
-      <div className="manifest-detail-header">
-        <div className="manifest-detail-meta">
-          <h3>{detail.label || detail.identifier}</h3>
-          <code>{detail.manifestUrl}</code>
-        </div>
-        <button
+    <Box className="manifest-detail">
+      <Flex justify="between" align="start" gap="3" className="manifest-detail-header">
+        <Box className="manifest-detail-meta">
+          <Heading as="h3" size="3" mb="1">{detail.label || detail.identifier}</Heading>
+          <Text as="p" size="1" className="manifest-detail-meta-url">{detail.manifestUrl}</Text>
+        </Box>
+        <Button
           type="button"
           onClick={onAddCanvas}
           disabled={!canAddCanvas}
           title={!canAddCanvas && disableAddReason ? disableAddReason : undefined}
         >
           Add Canvas
-        </button>
-      </div>
+        </Button>
+      </Flex>
       {disableAddReason && !canAddCanvas && (
-        <p className="manifest-detail-hint">{disableAddReason}</p>
+        <Text as="p" size="1" color="gray" className="manifest-detail-hint">{disableAddReason}</Text>
       )}
       {canvasActionError && (
-        <div className="status status--error">{canvasActionError}</div>
+        <Callout.Root color="red" size="1">
+          <Callout.Text>{canvasActionError}</Callout.Text>
+        </Callout.Root>
       )}
-      {canvasSaving && <div className="status">Saving canvases…</div>}
-      <div className="manifest-detail-body">
+      {canvasSaving && (
+        <Callout.Root color="iris" size="1">
+          <Callout.Text>Saving canvases…</Callout.Text>
+        </Callout.Root>
+      )}
+      <Box className="manifest-detail-body">
         {canvases.length === 0 ? (
-          <p>
+          <Text as="p" size="2">
             {canAddCanvas
               ? "No canvases yet. Add one to start building the viewing order."
               : "No canvases yet."}
-          </p>
+          </Text>
         ) : (
-          <ul className="canvas-list">
+          <Flex direction="column" gap="2" className="canvas-list">
             {canvases.map((canvas, index) => (
-              <li key={canvas.id || `${index}`} className="canvas-list-item">
-                <div className="canvas-list-info">
-                  <strong>{canvas.label?.none?.[0] || `Canvas ${index + 1}`}</strong>
-                  <span>
-                    {canvas.items?.[0]?.items?.[0]?.body?.service?.[0]?.id ||
-                      canvas.items?.[0]?.items?.[0]?.body?.id ||
-                      ""}
-                  </span>
-                </div>
-                <div className="canvas-list-actions">
-                  <button
-                    type="button"
-                    onClick={() => onReorderCanvas(index, -1)}
-                    disabled={index === 0 || canvasSaving}
-                    aria-label="Move up"
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onReorderCanvas(index, 1)}
-                    disabled={index === canvases.length - 1 || canvasSaving}
-                    aria-label="Move down"
-                  >
-                    ↓
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onRemoveCanvas(index)}
-                    disabled={canvasSaving}
-                  >
-                    Remove
-                  </button>
-                </div>
-              </li>
+              <Card key={canvas.id || `${index}`} className="canvas-list-item">
+                <Flex justify="between" align="center" gap="3">
+                  <Box className="canvas-list-info">
+                    <Text as="p" weight="bold" size="2">{canvas.label?.none?.[0] || `Canvas ${index + 1}`}</Text>
+                    <Text as="p" size="1" color="gray">
+                      {canvas.items?.[0]?.items?.[0]?.body?.service?.[0]?.id ||
+                        canvas.items?.[0]?.items?.[0]?.body?.id ||
+                        ""}
+                    </Text>
+                  </Box>
+                  <Flex gap="2" className="canvas-list-actions">
+                    <Button
+                      type="button"
+                      variant="soft"
+                      size="1"
+                      onClick={() => onReorderCanvas(index, -1)}
+                      disabled={index === 0 || canvasSaving}
+                      aria-label="Move up"
+                    >
+                      ↑
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="soft"
+                      size="1"
+                      onClick={() => onReorderCanvas(index, 1)}
+                      disabled={index === canvases.length - 1 || canvasSaving}
+                      aria-label="Move down"
+                    >
+                      ↓
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="soft"
+                      color="red"
+                      size="1"
+                      onClick={() => onRemoveCanvas(index)}
+                      disabled={canvasSaving}
+                    >
+                      Remove
+                    </Button>
+                  </Flex>
+                </Flex>
+              </Card>
             ))}
-          </ul>
+          </Flex>
         )}
-      </div>
-    </div>
+      </Box>
+    </Box>
   );
 }
 
 function ManifestModal({open, onClose, onSubmit, form, onChange, submitting, error}) {
-  if (!open) return null;
-
   const handleChange = (evt) => {
     const {name, value} = evt.target;
     onChange(name, value);
   };
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <div className="modal" role="dialog" aria-modal="true">
-        <header>
-          <h3>Create Manifest</h3>
-        </header>
-        <form onSubmit={onSubmit} className="modal-form">
-          <label>
-            <span>Title (label)</span>
-            <input
-              name="label"
-              type="text"
-              required
-              value={form.label}
-              onChange={handleChange}
-              placeholder="e.g. 1973 yearbook"
-            />
-          </label>
-          <label>
-            <span>ID</span>
-            <input
-              name="identifier"
-              type="text"
-              required
-              value={form.identifier}
-              onChange={handleChange}
-              placeholder="e.g. 1973-yearbook"
-            />
-          </label>
-          {error && <div className="status status--error">{error}</div>}
-          <div className="modal-actions">
-            <button type="button" className="button-secondary" onClick={onClose} disabled={submitting}>
-              Cancel
-            </button>
-            <button type="submit" disabled={submitting}>
-              {submitting ? "Creating…" : "Next"}
-            </button>
-          </div>
+    <Dialog.Root open={open} onOpenChange={(next) => !next && onClose()}>
+      <Dialog.Content maxWidth="420px">
+        <Dialog.Title>Create Manifest</Dialog.Title>
+        <form onSubmit={onSubmit}>
+          <Flex direction="column" gap="3">
+            <label>
+              <Text as="div" size="2" weight="medium" mb="1">Title (label)</Text>
+              <TextField.Root
+                name="label"
+                type="text"
+                required
+                value={form.label}
+                onChange={handleChange}
+                placeholder="e.g. 1973 yearbook"
+              />
+            </label>
+            <label>
+              <Text as="div" size="2" weight="medium" mb="1">ID</Text>
+              <TextField.Root
+                name="identifier"
+                type="text"
+                required
+                value={form.identifier}
+                onChange={handleChange}
+                placeholder="e.g. 1973-yearbook"
+              />
+            </label>
+            {error && (
+              <Callout.Root color="red" size="1">
+                <Callout.Text>{error}</Callout.Text>
+              </Callout.Root>
+            )}
+            <Flex justify="end" gap="3" mt="2">
+              <Button type="button" variant="soft" color="gray" onClick={onClose} disabled={submitting}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={submitting}>
+                {submitting ? "Creating…" : "Next"}
+              </Button>
+            </Flex>
+          </Flex>
         </form>
-      </div>
-    </div>
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }
 
 function AddCanvasModal({open, onClose, onSubmit, form, onChange, submitting, error}) {
-  if (!open) return null;
-
   const handleChange = (evt) => {
     const {name, value} = evt.target;
     onChange(name, value);
   };
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <div className="modal" role="dialog" aria-modal="true">
-        <header>
-          <h3>Add Canvas</h3>
-        </header>
-        <form onSubmit={onSubmit} className="modal-form">
-          <label>
-            <span>IIIF info.json URL</span>
-            <input
-              name="imageUrl"
-              type="url"
-              value={form.imageUrl || ""}
-              onChange={handleChange}
-              placeholder="https://example.com/iiif/.../info.json"
-              disabled={submitting}
-              required
-            />
-          </label>
-          <label>
-            <span>Canvas label</span>
-            <input
-              name="label"
-              type="text"
-              value={form.label}
-              onChange={handleChange}
-              placeholder="e.g. Page 1"
-              disabled={submitting}
-            />
-          </label>
-          {error && <div className="status status--error">{error}</div>}
-          <div className="modal-actions">
-            <button
-              type="button"
-              className="button-secondary"
-              onClick={onClose}
-              disabled={submitting}
-            >
-              Cancel
-            </button>
-            <button type="submit" disabled={submitting || !form.imageUrl}>
-              {submitting ? "Adding…" : "Add"}
-            </button>
-          </div>
+    <Dialog.Root open={open} onOpenChange={(next) => !next && onClose()}>
+      <Dialog.Content maxWidth="420px">
+        <Dialog.Title>Add Canvas</Dialog.Title>
+        <form onSubmit={onSubmit}>
+          <Flex direction="column" gap="3">
+            <label>
+              <Text as="div" size="2" weight="medium" mb="1">IIIF info.json URL</Text>
+              <TextField.Root
+                name="imageUrl"
+                type="url"
+                value={form.imageUrl || ""}
+                onChange={handleChange}
+                placeholder="https://example.com/iiif/.../info.json"
+                disabled={submitting}
+                required
+              />
+            </label>
+            <label>
+              <Text as="div" size="2" weight="medium" mb="1">Canvas label</Text>
+              <TextField.Root
+                name="label"
+                type="text"
+                value={form.label}
+                onChange={handleChange}
+                placeholder="e.g. Page 1"
+                disabled={submitting}
+              />
+            </label>
+            {error && (
+              <Callout.Root color="red" size="1">
+                <Callout.Text>{error}</Callout.Text>
+              </Callout.Root>
+            )}
+            <Flex justify="end" gap="3" mt="2">
+              <Button type="button" variant="soft" color="gray" onClick={onClose} disabled={submitting}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={submitting || !form.imageUrl}>
+                {submitting ? "Adding…" : "Add"}
+              </Button>
+            </Flex>
+          </Flex>
         </form>
-      </div>
-    </div>
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }
 
 export default function App({ signOut }) {
   const manifestApiAvailable = Boolean(MANIFEST_API_BASE);
   const storageBrowserReady = Boolean(STORAGE_BUCKET && STORAGE_REGION);
-  const [selectedInfo, setSelectedInfo] = useState(null);
-  const [viewerError, setViewerError] = useState(null);
   const [manifests, setManifests] = useState([]);
   const [manifestLoading, setManifestLoading] = useState(manifestApiAvailable);
   const [manifestError, setManifestError] = useState(null);
@@ -701,20 +698,6 @@ export default function App({ signOut }) {
     fetchManifestDetail(selectedManifestId);
   }, [fetchManifestDetail, manifestApiAvailable, selectedManifestId]);
 
-  function handleImageSelect(serviceUrl) {
-    setViewerError(null);
-    fetch(`${serviceUrl}/info.json`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`Unable to load info.json from ${serviceUrl}`);
-        return res.json();
-      })
-      .then((data) => setSelectedInfo({data: {...data, id: serviceUrl}, infoUrl: `${serviceUrl}/info.json`, serviceUrl}))
-      .catch((err) => {
-        setViewerError(err.message);
-        setSelectedInfo(null);
-      });
-  }
-
   const canAddCanvas = Boolean(manifestDetail) && manifestApiAvailable;
   const disableAddReason = (() => {
     if (!manifestDetail) return null;
@@ -726,44 +709,53 @@ export default function App({ signOut }) {
 
   return (
     <main className="layout">
-      <header className="layout-header">
-        <h1>Static IIIF Dashboard**</h1>
-        <p>
-          Browse input/output directories and preview generated Image API
-          services.
-        </p>
-        {signOut && (
-          <button type="button" onClick={signOut} className="signout-button">Sign out</button>
-        )}
-      </header>
+      <Flex direction="column" gap="2" className="layout-header">
+        <Flex justify="between" align="start" gap="3">
+          <Box>
+            <Heading as="h1" size="7">Static IIIF Dashboard</Heading>
+            <Text as="p" color="gray">
+              Browse input/output directories and preview the selected
+              presentation manifest.
+            </Text>
+          </Box>
+          {signOut && (
+            <Button type="button" variant="soft" color="gray" onClick={signOut}>
+              Sign out
+            </Button>
+          )}
+        </Flex>
+      </Flex>
       <div className="columns">
-        <ImageLookup onSelect={handleImageSelect} />
         <StorageBrowserPanel ready={storageBrowserReady} />
       </div>
-      <section className="panel manifest-panel">
-        <header className="manifest-panel-header">
-          <h2>Presentation Manifests</h2>
-          <button
+      <Card size="3" className="panel manifest-panel">
+        <Flex justify="between" align="center" gap="3" className="manifest-panel-header">
+          <Heading as="h2" size="4">Presentation Manifests</Heading>
+          <Button
             type="button"
             onClick={handleOpenManifestModal}
             disabled={!manifestApiAvailable}
           >
             Add Manifest
-          </button>
-        </header>
-        <div className="panel-body manifest-panel-body">
+          </Button>
+        </Flex>
+        <Box className="panel-body manifest-panel-body">
           {!manifestApiAvailable && (
-            <div className="status status--error">
-              Manifest API URL is not configured. Update VITE_MANIFEST_API_URL to point at the deployed endpoint.
-            </div>
+            <Callout.Root color="red" size="1" mb="3">
+              <Callout.Text>
+                Manifest API URL is not configured. Update VITE_MANIFEST_API_URL to point at the deployed endpoint.
+              </Callout.Text>
+            </Callout.Root>
           )}
           {manifestError && manifestApiAvailable && (
-            <div className="status status--error">{manifestError}</div>
+            <Callout.Root color="red" size="1" mb="3">
+              <Callout.Text>{manifestError}</Callout.Text>
+            </Callout.Root>
           )}
-          <div className="manifest-content">
-            <div className="manifest-column manifest-column--list">
+          <Flex gap="4" wrap="wrap" className="manifest-content">
+            <Box className="manifest-column manifest-column--list">
               {manifestLoading ? (
-                <span className="status">Loading manifests…</span>
+                <Text as="p" size="2" color="gray">Loading manifests…</Text>
               ) : (
                 <ManifestList
                   manifests={manifests}
@@ -771,8 +763,8 @@ export default function App({ signOut }) {
                   onSelect={setSelectedManifestId}
                 />
               )}
-            </div>
-            <div className="manifest-column manifest-column--detail">
+            </Box>
+            <Box className="manifest-column manifest-column--detail">
               <ManifestDetail
                 detail={manifestDetail}
                 loading={manifestDetailLoading}
@@ -785,46 +777,43 @@ export default function App({ signOut }) {
                 canvasActionError={canvasActionError}
                 disableAddReason={disableAddReason}
               />
-            </div>
-          </div>
-        </div>
-      </section>
-      <section className="panel viewer-panel">
-        {selectedInfo ? (
-          <div className="viewer">
-            <div className="viewer-header">
-              <h2>IIIF Preview</h2>
-              <p>{selectedInfo.data.id || selectedInfo.serviceUrl}</p>
-            </div>
-            <div
+            </Box>
+          </Flex>
+        </Box>
+      </Card>
+      <Card size="3" className="panel viewer-panel">
+        {manifestDetailLoading ? (
+          <Text as="p" color="gray" className="viewer-placeholder">Loading manifest…</Text>
+        ) : manifestDetail ? (
+          <Flex direction="column" gap="3" className="viewer">
+            <Box className="viewer-header">
+              <Heading as="h2" size="4">IIIF Preview</Heading>
+              <Text as="p" color="gray">{manifestDetail.label || manifestDetail.identifier}</Text>
+            </Box>
+            <Box
               className="viewer-stage"
               style={{
                 width: "100%",
-                height: "50vh",
+                height: "60vh",
               }}
             >
-              <Image
-                key={selectedInfo.serviceUrl}
-                src={selectedInfo.serviceUrl}
-                isTiledImage
+              <CloverViewer
+                key={manifestDetail.identifier}
+                iiifContent={manifestDetail.manifest}
               />
-            </div>
-            <div className="viewer-meta">
-              <p>
-                Dimensions: {selectedInfo.data.width} × {selectedInfo.data.height}px
-              </p>
-              <p>Profile: {Array.isArray(selectedInfo.data.profile) ? selectedInfo.data.profile[0] : selectedInfo.data.profile}</p>
-            </div>
-          </div>
+            </Box>
+          </Flex>
         ) : (
-          <div className="viewer-placeholder">
-            Enter a IIIF image URL above to preview.
-          </div>
+          <Text as="p" color="gray" className="viewer-placeholder">
+            Select a manifest above to preview it here.
+          </Text>
         )}
-        {viewerError && (
-          <div className="status status--error">{viewerError}</div>
+        {manifestDetailError && (
+          <Callout.Root color="red" size="1" mt="3">
+            <Callout.Text>{manifestDetailError}</Callout.Text>
+          </Callout.Root>
         )}
-      </section>
+      </Card>
       <ManifestModal
         open={isManifestModalOpen}
         onClose={handleCloseManifestModal}
