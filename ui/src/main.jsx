@@ -9,7 +9,7 @@ import App from './App.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <Theme appearance="light" accentColor="iris" grayColor="mauve">
+    <Theme appearance="light" accentColor="iris" grayColor="mauve" scaling="110%">
       <BrowserRouter>
         <Authenticator hideSignUp>
           {({ signOut }) => (

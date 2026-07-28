@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useState} from "react";
-import {useNavigate, useParams} from "react-router-dom";
+import {Link as RouterLink, useNavigate, useParams} from "react-router-dom";
 import {Amplify} from "aws-amplify";
 import {fetchAuthSession} from "aws-amplify/auth";
 import {list} from "aws-amplify/storage";
@@ -12,6 +12,9 @@ import {
   Card,
   Heading,
   Text,
+  Code,
+  Link,
+  Table,
   Button,
   TextField,
   Dialog,
@@ -160,41 +163,92 @@ function StorageBrowserPanel({ready}) {
   );
 }
 
-function ManifestList({manifests, selectedId, onSelect}) {
+function ManifestList({manifests, selectedId}) {
+  const [previewManifest, setPreviewManifest] = useState(null);
+
   if (!manifests || manifests.length === 0) {
     return <Text as="p" size="2" color="gray" className="tree-empty">No works yet.</Text>;
   }
 
   return (
-    <Flex direction="column" gap="2" className="manifest-list">
-      {manifests.map((manifest) => {
-        const isActive = manifest.identifier === selectedId;
-        const canvasCount = Number.isFinite(manifest.itemCount)
-          ? manifest.itemCount
-          : Array.isArray(manifest.manifest?.items)
-            ? manifest.manifest.items.length
-            : 0;
-        return (
-          <Card
-            key={manifest.identifier}
-            asChild
-            variant={isActive ? "classic" : "surface"}
-            className={`manifest-list-item ${isActive ? "manifest-list-item--active" : ""}`}
-          >
-            <button type="button" onClick={() => onSelect(manifest.identifier)}>
-              <Flex direction="column" align="start" gap="1">
-                <Text weight="bold" size="2">{manifest.label || manifest.identifier}</Text>
-                <Text size="1" color="gray">ID: {manifest.identifier}</Text>
-                <Text size="1" color="gray">
-                  {canvasCount} {canvasCount === 1 ? "asset" : "assets"}
-                </Text>
-                <AssetThumbnails services={manifest.thumbnails} size={32} />
-              </Flex>
-            </button>
-          </Card>
-        );
-      })}
-    </Flex>
+    <>
+      <Table.Root variant="surface" className="manifest-list">
+        <Table.Header>
+          <Table.Row>
+            <Table.ColumnHeaderCell>ID</Table.ColumnHeaderCell>
+            <Table.ColumnHeaderCell>Title</Table.ColumnHeaderCell>
+            <Table.ColumnHeaderCell>Assets</Table.ColumnHeaderCell>
+            <Table.ColumnHeaderCell></Table.ColumnHeaderCell>
+          </Table.Row>
+        </Table.Header>
+        <Table.Body>
+          {manifests.map((manifest) => {
+            const isActive = manifest.identifier === selectedId;
+            const canvasCount = Number.isFinite(manifest.itemCount)
+              ? manifest.itemCount
+              : Array.isArray(manifest.manifest?.items)
+                ? manifest.manifest.items.length
+                : 0;
+            return (
+              <Table.Row
+                key={manifest.identifier}
+                className={`manifest-list-row ${isActive ? "manifest-list-row--active" : ""}`}
+              >
+                <Table.RowHeaderCell>
+                  <Code size="2" color="gray" variant="ghost" style={{fontSize: "var(--font-size-2)"}}>
+                    {manifest.identifier}
+                  </Code>
+                </Table.RowHeaderCell>
+                <Table.Cell>
+                  <Link asChild size="2" weight="bold">
+                    <RouterLink to={`/works/${encodeURIComponent(manifest.identifier)}`}>
+                      {manifest.label || manifest.identifier}
+                    </RouterLink>
+                  </Link>
+                </Table.Cell>
+                <Table.Cell className="assets-cell">
+                  <AssetThumbnails
+                    services={manifest.thumbnails}
+                    size={32}
+                    stacked
+                    count={canvasCount}
+                  />
+                </Table.Cell>
+                <Table.Cell>
+                  <Flex gap="3" justify="end" className="manifest-row-actions">
+                    <Link asChild size="2">
+                      <RouterLink to={`/works/${encodeURIComponent(manifest.identifier)}`}>
+                        Edit
+                      </RouterLink>
+                    </Link>
+                    <Link asChild size="2">
+                      <button type="button" onClick={() => setPreviewManifest(manifest)}>
+                        Preview
+                      </button>
+                    </Link>
+                    <Link asChild size="2">
+                      <a href={manifest.manifestUrl} target="_blank" rel="noreferrer">
+                        IIIF
+                      </a>
+                    </Link>
+                  </Flex>
+                </Table.Cell>
+              </Table.Row>
+            );
+          })}
+        </Table.Body>
+      </Table.Root>
+      <Dialog.Root open={Boolean(previewManifest)} onOpenChange={(open) => !open && setPreviewManifest(null)}>
+        <Dialog.Content maxWidth="800px">
+          <Dialog.Title>{previewManifest?.label || previewManifest?.identifier}</Dialog.Title>
+          {previewManifest && (
+            <Box className="viewer-stage" style={{width: "100%"}}>
+              <CloverViewer key={previewManifest.identifier} iiifContent={previewManifest.manifestUrl} />
+            </Box>
+          )}
+        </Dialog.Content>
+      </Dialog.Root>
+    </>
   );
 }
 
@@ -515,21 +569,22 @@ function WorksListPanel({
   manifestLoading,
   manifests,
   selectedManifestId,
-  onSelectWork,
   onOpenManifestModal,
 }) {
   return (
     <Flex direction="column" gap="5">
-      <Button
-        type="button"
-        size="4"
-        style={{alignSelf: "flex-start"}}
-        onClick={onOpenManifestModal}
-        disabled={!manifestApiAvailable}
-      >
-        Add Work
-      </Button>
       <Card size="3" className="panel manifest-panel">
+        <Flex justify="between" align="center" gap="3" mb="4">
+          <TextField.Root size="3" placeholder="Search works…" style={{flex: 1}} />
+          <Button
+            type="button"
+            size="3"
+            onClick={onOpenManifestModal}
+            disabled={!manifestApiAvailable}
+          >
+            Add Work
+          </Button>
+        </Flex>
         <Box className="panel-body manifest-panel-body">
           {!manifestApiAvailable && (
             <Callout.Root color="red" size="1" mb="3">
@@ -549,7 +604,6 @@ function WorksListPanel({
             <ManifestList
               manifests={manifests}
               selectedId={selectedManifestId}
-              onSelect={onSelectWork}
             />
           )}
         </Box>
@@ -576,22 +630,6 @@ function WorkDetailPanel({
       <Button type="button" variant="soft" color="gray" style={{alignSelf: "flex-start"}} onClick={onBack}>
         ← Works
       </Button>
-      <Card size="3" className="panel manifest-panel">
-        <Box className="panel-body manifest-panel-body">
-          <ManifestDetail
-            detail={manifestDetail}
-            loading={manifestDetailLoading}
-            error={manifestDetailError}
-            onAddCanvas={onAddCanvas}
-            canAddCanvas={canAddCanvas}
-            onReorderCanvas={onReorderCanvas}
-            onRemoveCanvas={onRemoveCanvas}
-            canvasSaving={canvasSaving}
-            canvasActionError={canvasActionError}
-            disableAddReason={disableAddReason}
-          />
-        </Box>
-      </Card>
       <Card size="3" className="panel viewer-panel">
         {manifestDetailLoading ? (
           <Text as="p" color="gray" className="viewer-placeholder">Loading work…</Text>
@@ -599,10 +637,7 @@ function WorkDetailPanel({
           <Flex direction="column" gap="3" className="viewer">
             <Box
               className="viewer-stage"
-              style={{
-                width: "100%",
-                height: "60vh",
-              }}
+              style={{width: "100%"}}
             >
               <CloverViewer
                 key={manifestDetail.identifier}
@@ -620,6 +655,22 @@ function WorkDetailPanel({
             <Callout.Text>{manifestDetailError}</Callout.Text>
           </Callout.Root>
         )}
+      </Card>
+      <Card size="3" className="panel manifest-panel">
+        <Box className="panel-body manifest-panel-body">
+          <ManifestDetail
+            detail={manifestDetail}
+            loading={manifestDetailLoading}
+            error={manifestDetailError}
+            onAddCanvas={onAddCanvas}
+            canAddCanvas={canAddCanvas}
+            onReorderCanvas={onReorderCanvas}
+            onRemoveCanvas={onRemoveCanvas}
+            canvasSaving={canvasSaving}
+            canvasActionError={canvasActionError}
+            disableAddReason={disableAddReason}
+          />
+        </Box>
       </Card>
     </Flex>
   );
@@ -954,7 +1005,7 @@ export default function App({ signOut }) {
           )}
         </Flex>
       </Flex>
-      <Tabs.Root value={activeTab} onValueChange={(value) => navigate(`/${value}`)}>
+      <Tabs.Root value={activeTab} onValueChange={(value) => value !== activeTab && navigate(`/${value}`)}>
         <Tabs.List size="2" className="tabs-large">
           <Tabs.Trigger value="works">Works</Tabs.Trigger>
           <Tabs.Trigger value="assets">Assets</Tabs.Trigger>
@@ -982,7 +1033,6 @@ export default function App({ signOut }) {
                 manifestLoading={manifestLoading}
                 manifests={manifests}
                 selectedManifestId={selectedManifestId}
-                onSelectWork={selectWork}
                 onOpenManifestModal={handleOpenManifestModal}
               />
             )}
