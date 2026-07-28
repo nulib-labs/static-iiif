@@ -144,6 +144,22 @@ Resources:
               - Effect: Allow
                 Action: s3:ListBucket
                 Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif"
+        - PolicyName: SourceBucketImageAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub "arn:aws:s3:::${AWS::StackName}-source/image/*"
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:aws:s3:::${AWS::StackName}-source"
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - "image/*"
 
   CognitoIdentityPoolRoleAttachment:
     Type: AWS::Cognito::IdentityPoolRoleAttachment
@@ -287,6 +303,8 @@ Resources:
           Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/manifests"
         - Name: VITE_STORAGE_BUCKET
           Value: !Sub "${AWS::StackName}-iiif"
+        - Name: VITE_SOURCE_BUCKET
+          Value: !Sub "${AWS::StackName}-source"
         - Name: VITE_STORAGE_REGION
           Value: !Ref AWS::Region
         - Name: VITE_STORAGE_IDENTITY_POOL_ID

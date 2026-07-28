@@ -11,12 +11,18 @@ body {
 }
 
 main.layout {
-  max-width: 1200px;
-  margin: 0 auto;
   padding: 24px;
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+.tabs-large {
+  font-size: 1rem;
+  --tab-height: 2.5rem;
+  --tab-padding-x: 1rem;
+  --tab-inner-padding-x: 0.5rem;
+  --tab-inner-padding-y: 0.25rem;
 }
 
 .layout-header {
@@ -202,10 +208,6 @@ main.layout {
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-.viewer-header h2 {
-  margin: 0;
 }
 
 .viewer-stage {

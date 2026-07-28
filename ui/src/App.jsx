@@ -13,6 +13,7 @@ import {
   TextField,
   Dialog,
   Callout,
+  Tabs,
 } from "@radix-ui/themes";
 import "@aws-amplify/ui-react/styles.css";
 import "@aws-amplify/ui-react-storage/styles.css";
@@ -21,6 +22,7 @@ import "./App.css";
 
 const MANIFEST_API_BASE = (import.meta.env.VITE_MANIFEST_API_URL || "").replace(/\/$/, "");
 const STORAGE_BUCKET = import.meta.env.VITE_STORAGE_BUCKET || "";
+const SOURCE_BUCKET = import.meta.env.VITE_SOURCE_BUCKET || "";
 const STORAGE_REGION = import.meta.env.VITE_STORAGE_REGION || import.meta.env.VITE_AWS_REGION || "";
 const STORAGE_IDENTITY_POOL_ID = import.meta.env.VITE_STORAGE_IDENTITY_POOL_ID || "";
 const COGNITO_USER_POOL_ID = import.meta.env.VITE_COGNITO_USER_POOL_ID || "";
@@ -63,13 +65,13 @@ function slugifyManifestId(value) {
 
 function buildCanvasResource(manifest, imageInfo, label) {
   if (!manifest?.id) {
-    throw new Error("Manifest is missing an id");
+    throw new Error("Work is missing an id");
   }
   if (!imageInfo?.id) {
     throw new Error("Image info is missing an id");
   }
   const manifestBase = manifest.id.replace(/\/manifest\.json$/i, "");
-  const normalizedLabel = label?.trim() || "Canvas";
+  const normalizedLabel = label?.trim() || "Asset";
   const slugBase = slugifyManifestId(normalizedLabel) || slugifyManifestId(imageInfo.id.split("/").pop() || "");
   const uniqueSlug = slugBase ? `${slugBase}-${Date.now().toString(36)}` : Date.now().toString(36);
   const canvasId = `${manifestBase}/canvas/${uniqueSlug}`;
@@ -130,8 +132,8 @@ function StorageBrowserPanel({ready}) {
           </Box>
         ) : (
           <Text as="p" size="2" color="gray">
-            Provide `VITE_STORAGE_BUCKET` and `VITE_STORAGE_REGION` to enable
-            the Amplify Storage Browser.
+            Provide `VITE_STORAGE_BUCKET`, `VITE_SOURCE_BUCKET`, and
+            `VITE_STORAGE_REGION` to enable the Amplify Storage Browser.
           </Text>
         )}
       </Box>
@@ -141,7 +143,7 @@ function StorageBrowserPanel({ready}) {
 
 function ManifestList({manifests, selectedId, onSelect}) {
   if (!manifests || manifests.length === 0) {
-    return <Text as="p" size="2" color="gray" className="tree-empty">No manifests yet.</Text>;
+    return <Text as="p" size="2" color="gray" className="tree-empty">No works yet.</Text>;
   }
 
   return (
@@ -165,7 +167,7 @@ function ManifestList({manifests, selectedId, onSelect}) {
                 <Text weight="bold" size="2">{manifest.label || manifest.identifier}</Text>
                 <Text size="1" color="gray">ID: {manifest.identifier}</Text>
                 <Text size="1" color="gray">
-                  {canvasCount} {canvasCount === 1 ? "canvas" : "canvases"}
+                  {canvasCount} {canvasCount === 1 ? "asset" : "assets"}
                 </Text>
               </Flex>
             </button>
@@ -189,7 +191,7 @@ function ManifestDetail({
   disableAddReason,
 }) {
   if (loading) {
-    return <Text as="p" color="gray" className="manifest-detail-placeholder">Loading manifest…</Text>;
+    return <Text as="p" color="gray" className="manifest-detail-placeholder">Loading work…</Text>;
   }
 
   if (error) {
@@ -201,7 +203,7 @@ function ManifestDetail({
   }
 
   if (!detail) {
-    return <Text as="p" color="gray" className="manifest-detail-placeholder">Select a manifest to edit canvases.</Text>;
+    return <Text as="p" color="gray" className="manifest-detail-placeholder">Select a work to edit assets.</Text>;
   }
 
   const canvases = Array.isArray(detail.manifest?.items)
@@ -221,7 +223,7 @@ function ManifestDetail({
           disabled={!canAddCanvas}
           title={!canAddCanvas && disableAddReason ? disableAddReason : undefined}
         >
-          Add Canvas
+          Add Asset
         </Button>
       </Flex>
       {disableAddReason && !canAddCanvas && (
@@ -234,15 +236,15 @@ function ManifestDetail({
       )}
       {canvasSaving && (
         <Callout.Root color="iris" size="1">
-          <Callout.Text>Saving canvases…</Callout.Text>
+          <Callout.Text>Saving assets…</Callout.Text>
         </Callout.Root>
       )}
       <Box className="manifest-detail-body">
         {canvases.length === 0 ? (
           <Text as="p" size="2">
             {canAddCanvas
-              ? "No canvases yet. Add one to start building the viewing order."
-              : "No canvases yet."}
+              ? "No assets yet. Add one to start building the viewing order."
+              : "No assets yet."}
           </Text>
         ) : (
           <Flex direction="column" gap="2" className="canvas-list">
@@ -250,7 +252,7 @@ function ManifestDetail({
               <Card key={canvas.id || `${index}`} className="canvas-list-item">
                 <Flex justify="between" align="center" gap="3">
                   <Box className="canvas-list-info">
-                    <Text as="p" weight="bold" size="2">{canvas.label?.none?.[0] || `Canvas ${index + 1}`}</Text>
+                    <Text as="p" weight="bold" size="2">{canvas.label?.none?.[0] || `Asset ${index + 1}`}</Text>
                     <Text as="p" size="1" color="gray">
                       {canvas.items?.[0]?.items?.[0]?.body?.service?.[0]?.id ||
                         canvas.items?.[0]?.items?.[0]?.body?.id ||
@@ -308,7 +310,7 @@ function ManifestModal({open, onClose, onSubmit, form, onChange, submitting, err
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && onClose()}>
       <Dialog.Content maxWidth="420px">
-        <Dialog.Title>Create Manifest</Dialog.Title>
+        <Dialog.Title>Create Work</Dialog.Title>
         <form onSubmit={onSubmit}>
           <Flex direction="column" gap="3">
             <label>
@@ -362,7 +364,7 @@ function AddCanvasModal({open, onClose, onSubmit, form, onChange, submitting, er
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && onClose()}>
       <Dialog.Content maxWidth="420px">
-        <Dialog.Title>Add Canvas</Dialog.Title>
+        <Dialog.Title>Add Asset</Dialog.Title>
         <form onSubmit={onSubmit}>
           <Flex direction="column" gap="3">
             <label>
@@ -378,7 +380,7 @@ function AddCanvasModal({open, onClose, onSubmit, form, onChange, submitting, er
               />
             </label>
             <label>
-              <Text as="div" size="2" weight="medium" mb="1">Canvas label</Text>
+              <Text as="div" size="2" weight="medium" mb="1">Asset label</Text>
               <TextField.Root
                 name="label"
                 type="text"
@@ -410,7 +412,7 @@ function AddCanvasModal({open, onClose, onSubmit, form, onChange, submitting, er
 
 export default function App({ signOut }) {
   const manifestApiAvailable = Boolean(MANIFEST_API_BASE);
-  const storageBrowserReady = Boolean(STORAGE_BUCKET && STORAGE_REGION);
+  const storageBrowserReady = Boolean(STORAGE_BUCKET && SOURCE_BUCKET && STORAGE_REGION);
   const [manifests, setManifests] = useState([]);
   const [manifestLoading, setManifestLoading] = useState(manifestApiAvailable);
   const [manifestError, setManifestError] = useState(null);
@@ -441,7 +443,7 @@ export default function App({ signOut }) {
   const refreshManifests = useCallback(async () => {
     if (!manifestApiAvailable) {
       setManifests([]);
-      setManifestError("Manifest API URL is not configured. Set VITE_MANIFEST_API_URL and redeploy.");
+      setManifestError("Work API URL is not configured. Set VITE_MANIFEST_API_URL and redeploy.");
       setManifestLoading(false);
       return;
     }
@@ -450,12 +452,12 @@ export default function App({ signOut }) {
     try {
       const endpoint = manifestApiUrl();
       if (!endpoint) {
-        throw new Error("Manifest API unavailable");
+        throw new Error("Work API unavailable");
       }
       const response = await fetch(endpoint, { headers: await authHeaders() });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.error || "Unable to load manifests");
+        throw new Error(data.error || "Unable to load works");
       }
       setManifests(Array.isArray(data.manifests) ? data.manifests : []);
     } catch (err) {
@@ -476,12 +478,12 @@ export default function App({ signOut }) {
     try {
       const endpoint = manifestApiUrl(encodeURIComponent(identifier));
       if (!endpoint) {
-        throw new Error("Manifest API unavailable");
+        throw new Error("Work API unavailable");
       }
       const response = await fetch(endpoint, { headers: await authHeaders() });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.error || "Unable to load manifest");
+        throw new Error(data.error || "Unable to load work");
       }
       setManifestDetail(data.manifest);
       setManifests((prev) =>
@@ -540,7 +542,7 @@ export default function App({ signOut }) {
     try {
       const endpoint = manifestApiUrl();
       if (!endpoint) {
-        throw new Error("Manifest API unavailable");
+        throw new Error("Work API unavailable");
       }
       const response = await fetch(endpoint, {
         method: "POST",
@@ -549,7 +551,7 @@ export default function App({ signOut }) {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.error || "Unable to create manifest");
+        throw new Error(data.error || "Unable to create work");
       }
       await refreshManifests();
       setSelectedManifestId(data.manifest?.identifier || payload.identifier);
@@ -576,14 +578,14 @@ export default function App({ signOut }) {
   const persistManifestItems = useCallback(
     async (items) => {
       if (!selectedManifestId) {
-        throw new Error("Select a manifest first");
+        throw new Error("Select a work first");
       }
       setCanvasSaving(true);
       setCanvasActionError(null);
       try {
         const endpoint = manifestApiUrl(`${encodeURIComponent(selectedManifestId)}/items`);
         if (!endpoint) {
-          throw new Error("Manifest API unavailable");
+          throw new Error("Work API unavailable");
         }
         const response = await fetch(endpoint, {
           method: "PUT",
@@ -592,7 +594,7 @@ export default function App({ signOut }) {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
-          throw new Error(data.error || "Unable to save canvases");
+          throw new Error(data.error || "Unable to save assets");
         }
         setManifestDetail(data.manifest);
         setManifests((prev) =>
@@ -616,7 +618,7 @@ export default function App({ signOut }) {
   const handleCanvasSubmit = async (event) => {
     event.preventDefault();
     if (!manifestDetail?.manifest) {
-      setCanvasModalError("Select a manifest first");
+      setCanvasModalError("Select a work first");
       return;
     }
     setCanvasModalSubmitting(true);
@@ -634,10 +636,10 @@ export default function App({ signOut }) {
         throw new Error(data.error || "Unable to load image info");
       }
       const derivedLabelFromUrl = () => {
-        const trimmed = infoUrl.split("/").filter(Boolean).pop() || "canvas";
+        const trimmed = infoUrl.split("/").filter(Boolean).pop() || "asset";
         return trimmed.replace(/info\.json$/i, "");
       };
-      const label = canvasForm.label.trim() || derivedLabelFromUrl() || "Untitled canvas";
+      const label = canvasForm.label.trim() || derivedLabelFromUrl() || "Untitled asset";
       const nextCanvas = buildCanvasResource(manifestDetail.manifest, data, label);
       const nextItems = [...(manifestDetail.manifest.items || []), nextCanvas];
       await persistManifestItems(nextItems);
@@ -702,7 +704,7 @@ export default function App({ signOut }) {
   const disableAddReason = (() => {
     if (!manifestDetail) return null;
     if (!manifestApiAvailable) {
-      return "Manifest API unavailable.";
+      return "Work API unavailable.";
     }
     return null;
   })();
@@ -714,8 +716,7 @@ export default function App({ signOut }) {
           <Box>
             <Heading as="h1" size="7">Static IIIF Dashboard</Heading>
             <Text as="p" color="gray">
-              Browse input/output directories and preview the selected
-              presentation manifest.
+              Manage works and browse image assets.
             </Text>
           </Box>
           {signOut && (
@@ -725,95 +726,104 @@ export default function App({ signOut }) {
           )}
         </Flex>
       </Flex>
-      <div className="columns">
-        <StorageBrowserPanel ready={storageBrowserReady} />
-      </div>
-      <Card size="3" className="panel manifest-panel">
-        <Flex justify="between" align="center" gap="3" className="manifest-panel-header">
-          <Heading as="h2" size="4">Presentation Manifests</Heading>
-          <Button
-            type="button"
-            onClick={handleOpenManifestModal}
-            disabled={!manifestApiAvailable}
-          >
-            Add Manifest
-          </Button>
-        </Flex>
-        <Box className="panel-body manifest-panel-body">
-          {!manifestApiAvailable && (
-            <Callout.Root color="red" size="1" mb="3">
-              <Callout.Text>
-                Manifest API URL is not configured. Update VITE_MANIFEST_API_URL to point at the deployed endpoint.
-              </Callout.Text>
-            </Callout.Root>
-          )}
-          {manifestError && manifestApiAvailable && (
-            <Callout.Root color="red" size="1" mb="3">
-              <Callout.Text>{manifestError}</Callout.Text>
-            </Callout.Root>
-          )}
-          <Flex gap="4" wrap="wrap" className="manifest-content">
-            <Box className="manifest-column manifest-column--list">
-              {manifestLoading ? (
-                <Text as="p" size="2" color="gray">Loading manifests…</Text>
-              ) : (
-                <ManifestList
-                  manifests={manifests}
-                  selectedId={selectedManifestId}
-                  onSelect={setSelectedManifestId}
-                />
-              )}
-            </Box>
-            <Box className="manifest-column manifest-column--detail">
-              <ManifestDetail
-                detail={manifestDetail}
-                loading={manifestDetailLoading}
-                error={manifestDetailError}
-                onAddCanvas={handleOpenCanvasModal}
-                canAddCanvas={canAddCanvas}
-                onReorderCanvas={handleReorderCanvas}
-                onRemoveCanvas={handleRemoveCanvas}
-                canvasSaving={canvasSaving}
-                canvasActionError={canvasActionError}
-                disableAddReason={disableAddReason}
-              />
-            </Box>
-          </Flex>
+      <Tabs.Root defaultValue="works">
+        <Tabs.List size="2" className="tabs-large">
+          <Tabs.Trigger value="works">Works</Tabs.Trigger>
+          <Tabs.Trigger value="assets">Assets</Tabs.Trigger>
+        </Tabs.List>
+        <Box pt="5">
+          <Tabs.Content value="works">
+            <Flex direction="column" gap="5">
+              <Button
+                type="button"
+                size="4"
+                style={{alignSelf: "flex-start"}}
+                onClick={handleOpenManifestModal}
+                disabled={!manifestApiAvailable}
+              >
+                Add Work
+              </Button>
+              <Card size="3" className="panel manifest-panel">
+                <Box className="panel-body manifest-panel-body">
+                  {!manifestApiAvailable && (
+                    <Callout.Root color="red" size="1" mb="3">
+                      <Callout.Text>
+                        Work API URL is not configured. Update VITE_MANIFEST_API_URL to point at the deployed endpoint.
+                      </Callout.Text>
+                    </Callout.Root>
+                  )}
+                  {manifestError && manifestApiAvailable && (
+                    <Callout.Root color="red" size="1" mb="3">
+                      <Callout.Text>{manifestError}</Callout.Text>
+                    </Callout.Root>
+                  )}
+                  <Flex gap="4" wrap="wrap" className="manifest-content">
+                    <Box className="manifest-column manifest-column--list">
+                      {manifestLoading ? (
+                        <Text as="p" size="2" color="gray">Loading works…</Text>
+                      ) : (
+                        <ManifestList
+                          manifests={manifests}
+                          selectedId={selectedManifestId}
+                          onSelect={setSelectedManifestId}
+                        />
+                      )}
+                    </Box>
+                    <Box className="manifest-column manifest-column--detail">
+                      <ManifestDetail
+                        detail={manifestDetail}
+                        loading={manifestDetailLoading}
+                        error={manifestDetailError}
+                        onAddCanvas={handleOpenCanvasModal}
+                        canAddCanvas={canAddCanvas}
+                        onReorderCanvas={handleReorderCanvas}
+                        onRemoveCanvas={handleRemoveCanvas}
+                        canvasSaving={canvasSaving}
+                        canvasActionError={canvasActionError}
+                        disableAddReason={disableAddReason}
+                      />
+                    </Box>
+                  </Flex>
+                </Box>
+              </Card>
+              <Card size="3" className="panel viewer-panel">
+                {manifestDetailLoading ? (
+                  <Text as="p" color="gray" className="viewer-placeholder">Loading work…</Text>
+                ) : manifestDetail ? (
+                  <Flex direction="column" gap="3" className="viewer">
+                    <Box
+                      className="viewer-stage"
+                      style={{
+                        width: "100%",
+                        height: "60vh",
+                      }}
+                    >
+                      <CloverViewer
+                        key={manifestDetail.identifier}
+                        iiifContent={manifestDetail.manifest}
+                      />
+                    </Box>
+                  </Flex>
+                ) : (
+                  <Text as="p" color="gray" className="viewer-placeholder">
+                    Select a work above to preview it here.
+                  </Text>
+                )}
+                {manifestDetailError && (
+                  <Callout.Root color="red" size="1" mt="3">
+                    <Callout.Text>{manifestDetailError}</Callout.Text>
+                  </Callout.Root>
+                )}
+              </Card>
+            </Flex>
+          </Tabs.Content>
+          <Tabs.Content value="assets">
+            <div className="columns">
+              <StorageBrowserPanel ready={storageBrowserReady} />
+            </div>
+          </Tabs.Content>
         </Box>
-      </Card>
-      <Card size="3" className="panel viewer-panel">
-        {manifestDetailLoading ? (
-          <Text as="p" color="gray" className="viewer-placeholder">Loading manifest…</Text>
-        ) : manifestDetail ? (
-          <Flex direction="column" gap="3" className="viewer">
-            <Box className="viewer-header">
-              <Heading as="h2" size="4">IIIF Preview</Heading>
-              <Text as="p" color="gray">{manifestDetail.label || manifestDetail.identifier}</Text>
-            </Box>
-            <Box
-              className="viewer-stage"
-              style={{
-                width: "100%",
-                height: "60vh",
-              }}
-            >
-              <CloverViewer
-                key={manifestDetail.identifier}
-                iiifContent={manifestDetail.manifest}
-              />
-            </Box>
-          </Flex>
-        ) : (
-          <Text as="p" color="gray" className="viewer-placeholder">
-            Select a manifest above to preview it here.
-          </Text>
-        )}
-        {manifestDetailError && (
-          <Callout.Root color="red" size="1" mt="3">
-            <Callout.Text>{manifestDetailError}</Callout.Text>
-          </Callout.Root>
-        )}
-      </Card>
+      </Tabs.Root>
       <ManifestModal
         open={isManifestModalOpen}
         onClose={handleCloseManifestModal}

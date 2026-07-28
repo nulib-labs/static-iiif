@@ -5,6 +5,13 @@ This project generates static IIIF Image 3.0 API resources and IIIF Presentation
 
 The project metadata CSV → manifest generation flow described in earlier iterations is still a future goal; today the manifest API supports single-manifest CRUD only.
 
+## UI Structure
+The dashboard (`ui/src/App.jsx`) is organized into tabs:
+- **Works** — create/manage IIIF Presentation manifests (the `presentation/manifest/` prefix in the IIIF bucket) and preview the selected manifest via Clover Viewer.
+- **Assets** — browse and upload files in the `image/` prefix of the **source** bucket (not the IIIF/output bucket) via the Amplify Storage Browser. Uploading here is what feeds the `iiif-image` Lambda's pipeline. The Cognito authenticated role's IAM policy scopes `s3:PutObject`/`s3:GetObject` to `image/*` only — the bucket root is intentionally not writable (or listable) from the UI.
+
+Future: a third tab/prefix for audio/video assets (A/V) is anticipated but out of scope for now — don't build it until it's explicitly requested.
+
 ## Project Structure
 ```
 app/
@@ -66,7 +73,7 @@ Fetch your stack's outputs:
 ```
 aws cloudformation describe-stacks --stack-name <your-stack-name> --query 'Stacks[0].Outputs'
 ```
-Copy `ui/.env.local.example` to `ui/.env.local` (gitignored) and fill it in from the output values — the mapping from CloudFormation output key to `VITE_*` variable is documented in the example file itself (`IiifEndpoint` → `VITE_IIIF_BASE_URL`, `ManifestApiUrl` → `VITE_MANIFEST_API_URL` with `/manifests` appended, `IIIFBucketName` → `VITE_STORAGE_BUCKET`, etc).
+Copy `ui/.env.local.example` to `ui/.env.local` (gitignored) and fill it in from the output values — the mapping from CloudFormation output key to `VITE_*` variable is documented in the example file itself (`IiifEndpoint` → `VITE_IIIF_BASE_URL`, `ManifestApiUrl` → `VITE_MANIFEST_API_URL` with `/manifests` appended, `IIIFBucketName` → `VITE_STORAGE_BUCKET`, `SourceBucketName` → `VITE_SOURCE_BUCKET`, etc).
 
 ### 4. Run the UI and sign in
 ```
@@ -87,7 +94,7 @@ aws cognito-idp admin-set-user-password \
   --password '<a-password-meeting-the-pool-policy>' \
   --permanent
 ```
-(If `admin-create-user` says the user already exists, just run the `admin-set-user-password` step to reset it.) Sign in, and you should see the dashboard: the IIIF Image URL lookup, the S3 Storage Browser listing your stack's IIIF bucket, and the Presentation Manifests panel talking to the real manifest API.
+(If `admin-create-user` says the user already exists, just run the `admin-set-user-password` step to reset it.) Sign in, and you should see the dashboard: the **Works** tab with the Presentation Manifests panel (talking to the real manifest API) and Clover Viewer preview, and the **Assets** tab with the S3 Storage Browser listing your stack's source bucket (`image/` prefix, upload-enabled).
 
 ## Environment / Feature Flags
 
@@ -96,7 +103,8 @@ aws cognito-idp admin-set-user-password \
 |---|---|
 | `VITE_IIIF_BASE_URL` | e.g. `https://abc.cloudfront.net/iiif/2` — serverless-iiif endpoint; pre-populates the URL input. Copy from the `IiifServer` nested stack's endpoint output after `sam deploy`. |
 | `VITE_MANIFEST_API_URL` | The `ManifestHttpApi` endpoint from stack outputs. |
-| `VITE_STORAGE_BUCKET` / `VITE_STORAGE_REGION` | The IIIF output S3 bucket and its region, for the Amplify Storage Browser. |
+| `VITE_STORAGE_BUCKET` / `VITE_STORAGE_REGION` | The IIIF output S3 bucket and its region. `STORAGE_BUCKET` also configures Amplify's default `Storage.S3` bucket (used for Auth/Storage bootstrap). |
+| `VITE_SOURCE_BUCKET` | The source S3 bucket (uploads land here, under `image/`, and trigger the `iiif-image` Lambda). Used by the Assets tab's Storage Browser location. |
 | `VITE_STORAGE_IDENTITY_POOL_ID` / `VITE_COGNITO_USER_POOL_ID` / `VITE_COGNITO_CLIENT_ID` | Cognito identifiers from stack outputs, for the Amplify `Authenticator`. |
 
 ### Amplify deployment

@@ -2,7 +2,7 @@ import { createStorageBrowser } from "@aws-amplify/ui-react-storage/browser";
 import { fetchAuthSession } from "aws-amplify/auth";
 import { Hub } from "aws-amplify/utils";
 
-const STORAGE_BUCKET = import.meta.env.VITE_STORAGE_BUCKET || "";
+const SOURCE_BUCKET = import.meta.env.VITE_SOURCE_BUCKET || "";
 const STORAGE_REGION =
   import.meta.env.VITE_STORAGE_REGION ||
   import.meta.env.VITE_AWS_REGION ||
@@ -12,26 +12,18 @@ const STORAGE_REGION =
 // Add new entries here as new workflows require access to additional prefixes/buckets.
 const LOCATIONS = [
   {
-    id: "iiif-images",
-    bucket: STORAGE_BUCKET,
+    id: "source-images",
+    bucket: SOURCE_BUCKET,
     prefix: "image/",
-    permissions: ["list", "get"],
+    permissions: ["list", "get", "write"],
     type: "PREFIX",
   },
   // TODO: manifest browsing/editing
   // {
   //   id: "iiif-manifests",
-  //   bucket: STORAGE_BUCKET,
+  //   bucket: import.meta.env.VITE_STORAGE_BUCKET || "",
   //   prefix: "presentation/manifest/",
   //   permissions: ["list", "get", "write", "delete"],
-  //   type: "PREFIX",
-  // },
-  // TODO: source image upload (requires VITE_SOURCE_BUCKET env var)
-  // {
-  //   id: "source-images",
-  //   bucket: import.meta.env.VITE_SOURCE_BUCKET || "",
-  //   prefix: "image/",
-  //   permissions: ["list", "get", "write"],
   //   type: "PREFIX",
   // },
 ];

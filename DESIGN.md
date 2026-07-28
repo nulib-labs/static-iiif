@@ -24,6 +24,7 @@ Any new top-level provider usage (e.g. rendering outside the normal `main.jsx` t
 - Modals (`Dialog.Root` / `Dialog.Content`)
 - Status/error messaging (`Callout.Root`)
 - Panel containers (`Card`)
+- Top-level navigation between Works/Assets (`Tabs.Root` / `Tabs.List` / `Tabs.Trigger` / `Tabs.Content`)
 
 ### What's still custom
 
