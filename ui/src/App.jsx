@@ -6,6 +6,7 @@ import {list} from "aws-amplify/storage";
 import {StorageBrowser} from "./storageBrowser";
 import AssetThumbnails from "./components/AssetThumbnails";
 import CloverViewer from "@samvera/clover-iiif/viewer";
+import {CLOVER_OPTIONS, CLOVER_THEME} from "./cloverTheme";
 import {
   Box,
   Flex,
@@ -243,7 +244,12 @@ function ManifestList({manifests, selectedId}) {
           <Dialog.Title>{previewManifest?.label || previewManifest?.identifier}</Dialog.Title>
           {previewManifest && (
             <Box className="viewer-stage" style={{width: "100%"}}>
-              <CloverViewer key={previewManifest.identifier} iiifContent={previewManifest.manifestUrl} />
+              <CloverViewer
+                key={previewManifest.identifier}
+                iiifContent={previewManifest.manifestUrl}
+                customTheme={CLOVER_THEME}
+                options={CLOVER_OPTIONS}
+              />
             </Box>
           )}
         </Dialog.Content>
@@ -613,7 +619,6 @@ function WorksListPanel({
 }
 
 function WorkDetailPanel({
-  onBack,
   manifestDetail,
   manifestDetailLoading,
   manifestDetailError,
@@ -627,9 +632,18 @@ function WorkDetailPanel({
 }) {
   return (
     <Flex direction="column" gap="5">
-      <Button type="button" variant="soft" color="gray" style={{alignSelf: "flex-start"}} onClick={onBack}>
-        ← Works
-      </Button>
+      {manifestDetail && (
+        <Flex direction="column" gap="1">
+          <Heading as="h1" size="6">{manifestDetail.label || manifestDetail.identifier}</Heading>
+          <Flex align="center" gap="2" style={{fontFamily: "var(--code-font-family)", fontSize: "var(--font-size-2)"}}>
+            <Link asChild underline="always">
+              <RouterLink to="/works">works</RouterLink>
+            </Link>
+            <Text style={{color: "var(--gray-8)"}}>/</Text>
+            <Text color="gray">{manifestDetail.identifier}</Text>
+          </Flex>
+        </Flex>
+      )}
       <Card size="3" className="panel viewer-panel">
         {manifestDetailLoading ? (
           <Text as="p" color="gray" className="viewer-placeholder">Loading work…</Text>
@@ -642,6 +656,8 @@ function WorkDetailPanel({
               <CloverViewer
                 key={manifestDetail.identifier}
                 iiifContent={manifestDetail.manifest}
+                customTheme={CLOVER_THEME}
+                options={CLOVER_OPTIONS}
               />
             </Box>
           </Flex>
@@ -1014,7 +1030,6 @@ export default function App({ signOut }) {
           <Tabs.Content value="works">
             {selectedManifestId ? (
               <WorkDetailPanel
-                onBack={() => selectWork(null)}
                 manifestDetail={manifestDetail}
                 manifestDetailLoading={manifestDetailLoading}
                 manifestDetailError={manifestDetailError}
