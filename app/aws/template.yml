@@ -290,7 +290,7 @@ Resources:
       Repository: !Ref GitHubRepo
       OauthToken: !Ref GitHubOAuthToken
       CustomRules:
-        - Source: "/<*>"
+        - Source: '</^[^.]+$|\.(?!(css|gif|ico|jpg|jpeg|js|png|txt|svg|woff|woff2|ttf|map|json|webp)$)([^.]+$)/>'
           Target: "/index.html"
           Status: "200"
       BuildSpec: |
