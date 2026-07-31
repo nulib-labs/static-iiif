@@ -1,7 +1,5 @@
 const {
   S3Client,
-  ListObjectsV2Command,
-  GetObjectCommand,
   PutObjectCommand,
   HeadObjectCommand,
 } = require("@aws-sdk/client-s3");
@@ -9,6 +7,9 @@ const {
   sanitizeManifestIdentifier,
   manifestObjectKey,
   createManifestTemplate,
+  readManifest: readManifestShared,
+  manifestSummary,
+  listManifestSummaries: listManifestSummariesShared,
 } = require("../../../shared/manifest");
 
 const s3 = new S3Client({});
@@ -31,24 +32,6 @@ function jsonResponse(statusCode, payload) {
   };
 }
 
-function canvasThumbnailService(canvas) {
-  const service = canvas?.items?.[0]?.items?.[0]?.body?.service?.[0];
-  return service?.id || null;
-}
-
-function manifestSummary(identifier, manifest) {
-  const label = manifest?.label?.none?.[0] || "";
-  const items = Array.isArray(manifest?.items) ? manifest.items : [];
-  return {
-    identifier,
-    label,
-    manifestUrl: manifest?.id || "",
-    relativePath: manifestObjectKey(identifier),
-    itemCount: items.length,
-    thumbnails: items.map(canvasThumbnailService).filter(Boolean),
-  };
-}
-
 function manifestDetail(identifier, manifest) {
   return {
     ...manifestSummary(identifier, manifest),
@@ -56,30 +39,8 @@ function manifestDetail(identifier, manifest) {
   };
 }
 
-async function streamToString(body) {
-  if (typeof body === "string") return body;
-  if (body && typeof body.transformToString === "function") {
-    return body.transformToString();
-  }
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    body
-      .on("data", (chunk) => chunks.push(chunk))
-      .on("error", reject)
-      .on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-  });
-}
-
 async function readManifest(identifier) {
-  const key = manifestObjectKey(identifier);
-  const response = await s3.send(
-    new GetObjectCommand({
-      Bucket: bucket,
-      Key: key,
-    }),
-  );
-  const payload = await streamToString(response.Body);
-  return JSON.parse(payload);
+  return readManifestShared({s3, bucket, identifier});
 }
 
 async function writeManifest(identifier, manifest) {
@@ -114,36 +75,7 @@ async function manifestExists(identifier) {
 }
 
 async function listManifestSummaries() {
-  const manifests = [];
-  let continuationToken;
-  do {
-    const response = await s3.send(
-      new ListObjectsV2Command({
-        Bucket: bucket,
-        Prefix: "presentation/manifest/",
-        ContinuationToken: continuationToken,
-      }),
-    );
-    const manifestObjects = (response.Contents || []).filter((item) =>
-      item.Key.endsWith("/manifest.json"),
-    );
-    await Promise.all(
-      manifestObjects.map(async (object) => {
-        const identifier = object.Key.split("/")[2];
-        try {
-          const manifest = await readManifest(identifier);
-          manifests.push(manifestSummary(identifier, manifest));
-        } catch (error) {
-          console.error(`Failed to read manifest ${object.Key}:`, error);
-        }
-      }),
-    );
-    continuationToken = response.NextContinuationToken;
-  } while (continuationToken);
-
-  return manifests.sort(
-    (a, b) => a.label.localeCompare(b.label) || a.identifier.localeCompare(b.identifier),
-  );
+  return listManifestSummariesShared({s3, bucket});
 }
 
 function parseBody(event) {
