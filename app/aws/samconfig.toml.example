@@ -13,4 +13,10 @@ capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
 # GitHub personal access token — needs "repo" scope
 #   Generate one at: https://github.com/settings/tokens → Generate new token (classic) → check "repo"
 # GitHub branch to deploy (default: main)
-parameter_overrides = "GitHubRepo=https://github.com/your-org/your-repo GitHubOAuthToken=ghp_your_token_here GitHubBranch=main"
+#
+# OpenSearch parameters are optional — leave them out (or blank) if this stack
+# doesn't need a search index. If you do set them, point at an existing shared
+# OpenSearch domain (this repo does not provision one); after deploying, read
+# the SearchFunctionRoleArn stack output and add it to that domain's access
+# policy yourself.
+parameter_overrides = "GitHubRepo=https://github.com/your-org/your-repo GitHubOAuthToken=ghp_your_token_here GitHubBranch=main OpenSearchDomainName=your-domain-name OpenSearchEndpoint=https://search-your-domain-xxxx.us-east-1.es.amazonaws.com SearchIndexName=your-stack-works"

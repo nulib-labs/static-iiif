@@ -28,6 +28,7 @@ import "@radix-ui/themes/styles.css";
 import "./App.css";
 
 const MANIFEST_API_BASE = (import.meta.env.VITE_MANIFEST_API_URL || "").replace(/\/$/, "");
+const SEARCH_API_BASE = (import.meta.env.VITE_SEARCH_API_URL || "").replace(/\/$/, "");
 const IIIF_BASE_URL = (import.meta.env.VITE_IIIF_BASE_URL || "").replace(/\/$/, "");
 const STORAGE_BUCKET = import.meta.env.VITE_STORAGE_BUCKET || "";
 const SOURCE_BUCKET = import.meta.env.VITE_SOURCE_BUCKET || "";
@@ -69,6 +70,19 @@ function slugifyManifestId(value) {
     .trim()
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function searchApiUrl(query) {
+  if (!SEARCH_API_BASE) return null;
+  return `${SEARCH_API_BASE}?q=${encodeURIComponent(query)}`;
+}
+
+// The search index only stores the manifest's own id (its full URL), not this app's
+// route — parse the identifier back out of the known presentation/manifest/<id>/manifest.json
+// suffix rather than having the backend bake in app-specific routing.
+function identifierFromManifestId(manifestUrl) {
+  const match = /presentation\/manifest\/([^/]+)\/manifest\.json$/.exec(manifestUrl || "");
+  return match ? match[1] : null;
 }
 
 function buildInfoUrlFromKey(key) {
@@ -255,6 +269,54 @@ function ManifestList({manifests, selectedId}) {
         </Dialog.Content>
       </Dialog.Root>
     </>
+  );
+}
+
+function SearchResultsList({results, loading, error}) {
+  if (loading) {
+    return <Text as="p" size="2" color="gray">Searching…</Text>;
+  }
+
+  if (error) {
+    return (
+      <Callout.Root color="red" size="1">
+        <Callout.Text>{error}</Callout.Text>
+      </Callout.Root>
+    );
+  }
+
+  if (!results || results.length === 0) {
+    return <Text as="p" size="2" color="gray" className="tree-empty">No matching works.</Text>;
+  }
+
+  return (
+    <Table.Root variant="surface" className="manifest-list">
+      <Table.Header>
+        <Table.Row>
+          <Table.ColumnHeaderCell>Title</Table.ColumnHeaderCell>
+        </Table.Row>
+      </Table.Header>
+      <Table.Body>
+        {results.map((hit) => {
+          const identifier = identifierFromManifestId(hit.manifestId);
+          return (
+            <Table.Row key={hit.id}>
+              <Table.Cell>
+                {identifier ? (
+                  <Link asChild size="2" weight="bold">
+                    <RouterLink to={`/works/${encodeURIComponent(identifier)}`}>
+                      {hit.title || identifier}
+                    </RouterLink>
+                  </Link>
+                ) : (
+                  <Text size="2">{hit.title || hit.manifestId}</Text>
+                )}
+              </Table.Cell>
+            </Table.Row>
+          );
+        })}
+      </Table.Body>
+    </Table.Root>
   );
 }
 
@@ -577,11 +639,91 @@ function WorksListPanel({
   selectedManifestId,
   onOpenManifestModal,
 }) {
+  const searchApiAvailable = Boolean(SEARCH_API_BASE);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState(null);
+  const [reindexing, setReindexing] = useState(false);
+  const [reindexResult, setReindexResult] = useState(null);
+  const [reindexError, setReindexError] = useState(null);
+
+  useEffect(() => {
+    const query = searchQuery.trim();
+    if (!query || !searchApiAvailable) {
+      setSearchResults(null);
+      setSearchError(null);
+      setSearchLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSearchLoading(true);
+    setSearchError(null);
+    const timer = setTimeout(async () => {
+      try {
+        const response = await fetch(searchApiUrl(query), {headers: await authHeaders()});
+        const data = await response.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!response.ok) {
+          throw new Error(data.error || "Search failed");
+        }
+        setSearchResults(Array.isArray(data.hits) ? data.hits : []);
+      } catch (err) {
+        if (!cancelled) setSearchError(err.message);
+      } finally {
+        if (!cancelled) setSearchLoading(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [searchQuery, searchApiAvailable]);
+
+  const handleReindex = async () => {
+    if (!searchApiAvailable) return;
+    setReindexing(true);
+    setReindexError(null);
+    setReindexResult(null);
+    try {
+      const response = await fetch(`${SEARCH_API_BASE}/reindex`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to publish search index");
+      }
+      setReindexResult(data);
+    } catch (err) {
+      setReindexError(err.message);
+    } finally {
+      setReindexing(false);
+    }
+  };
+
+  const isSearching = searchQuery.trim().length > 0;
+
   return (
     <Flex direction="column" gap="5">
       <Card size="3" className="panel manifest-panel">
         <Flex justify="between" align="center" gap="3" mb="4">
-          <TextField.Root size="3" placeholder="Search works…" style={{flex: 1}} />
+          <TextField.Root
+            size="3"
+            placeholder="Search works…"
+            style={{flex: 1}}
+            value={searchQuery}
+            onChange={(evt) => setSearchQuery(evt.target.value)}
+          />
+          <Button
+            type="button"
+            size="3"
+            variant="soft"
+            onClick={handleReindex}
+            disabled={!searchApiAvailable || reindexing}
+          >
+            {reindexing ? "Publishing…" : "Publish search index"}
+          </Button>
           <Button
             type="button"
             size="3"
@@ -604,7 +746,22 @@ function WorksListPanel({
               <Callout.Text>{manifestError}</Callout.Text>
             </Callout.Root>
           )}
-          {manifestLoading ? (
+          {reindexError && (
+            <Callout.Root color="red" size="1" mb="3">
+              <Callout.Text>{reindexError}</Callout.Text>
+            </Callout.Root>
+          )}
+          {reindexResult && !reindexError && (
+            <Callout.Root color="green" size="1" mb="3">
+              <Callout.Text>
+                Indexed {reindexResult.indexed ?? 0}, removed {reindexResult.deleted ?? 0} stale document
+                {reindexResult.deleted === 1 ? "" : "s"}.
+              </Callout.Text>
+            </Callout.Root>
+          )}
+          {isSearching ? (
+            <SearchResultsList results={searchResults} loading={searchLoading} error={searchError} />
+          ) : manifestLoading ? (
             <Text as="p" size="2" color="gray">Loading works…</Text>
           ) : (
             <ManifestList

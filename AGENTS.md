@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Overview
-This project generates static IIIF Image 3.0 API resources and IIIF Presentation 3.0 manifests for a collection of images, deployed entirely on AWS. A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). A second Lambda (`app/aws/lambdas/manifest/`) exposes a CRUD API (behind API Gateway + Cognito auth) for managing IIIF Presentation 3.0 manifests. A React/Vite frontend (`ui/`) talks to both, and is hosted via Amplify.
+This project generates static IIIF Image 3.0 API resources and IIIF Presentation 3.0 manifests for a collection of images, deployed entirely on AWS. A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). A second Lambda (`app/aws/lambdas/manifest/`) exposes a CRUD API (behind API Gateway + Cognito auth) for managing IIIF Presentation 3.0 manifests. A third Lambda (`app/aws/lambdas/search/`) maintains a title search index for those manifests in an existing, shared AWS OpenSearch domain (not provisioned by this repo) — see "Search index" below. A React/Vite frontend (`ui/`) talks to all three, and is hosted via Amplify.
 
 The project metadata CSV → manifest generation flow described in earlier iterations is still a future goal; today the manifest API supports single-manifest CRUD only.
 
@@ -11,6 +11,26 @@ The dashboard (`ui/src/App.jsx`) is organized into tabs:
 - **Assets** — browse and upload files in the `image/` prefix of the **source** bucket (not the IIIF/output bucket) via the Amplify Storage Browser. Uploading here is what feeds the `iiif-image` Lambda's pipeline. The Cognito authenticated role's IAM policy scopes `s3:PutObject`/`s3:GetObject` to `image/*` only — the bucket root is intentionally not writable (or listable) from the UI.
 
 Future: a third tab/prefix for audio/video assets (A/V) is anticipated but out of scope for now — don't build it until it's explicitly requested.
+
+## Search index
+The **Works** tab also has a "Publish search index" button and a search box. Clicking
+Publish calls `POST /search/reindex`, which (idempotently) creates the OpenSearch index/mappings
+if missing, then does a full reindex from the manifests in S3 (the source of truth) — bulk
+upserting a document per manifest and deleting any indexed documents for manifests no longer
+in S3. There's no separate "enable" step and no enabled/disabled state stored anywhere: every
+stack with `OpenSearchEndpoint` configured behaves the same way. Documents are intentionally
+minimal — `title` (searchable), `manifestId` (the manifest's own id/URL), and `id` (a base64url
+encoding of `manifestId`, used as the OpenSearch `_id`) — with no routes/href/thumbnail fields,
+so the index doesn't bake in this app's own routing assumptions (a IIIF front-end like
+`canopy-iiif` can build its own id → route mapping separately). This app's own search box
+derives its `/works/{identifier}` links locally by parsing `manifestId`.
+
+The OpenSearch domain is pre-existing and shared (not provisioned by this repo, for cost
+reasons — each collection stack gets its own index name on the one domain, not its own
+domain). After a stack deploy with `OpenSearchDomainName`/`OpenSearchEndpoint` set, read the
+`SearchFunctionRoleArn` stack output and add it to that domain's access policy yourself
+(OpenSearch domain access is controlled by the domain's own resource-based policy, which this
+repo's CloudFormation doesn't own).
 
 ## Project Structure
 ```
@@ -22,8 +42,10 @@ app/
     lambdas/
       iiif-image/          # Lambda: converts source images to pyramid TIFFs (Level 2)
       manifest/            # Lambda: manifest CRUD API
+      search/              # Lambda: OpenSearch index management (reindex) + title query
   shared/
-    manifest.js            # Manifest key/template helpers shared by the manifest Lambda
+    manifest.js            # Manifest key/template/listing helpers shared by the manifest and search Lambdas
+    search.js              # Search document shape + manifest-id encoding, shared by the search Lambda
 ui/                        # React/Vite frontend — talks to the deployed AWS stack
   .env.local               # Your personal env config (gitignored — copy from .env.local.example)
   .env.local.example
@@ -103,6 +125,7 @@ aws cognito-idp admin-set-user-password \
 |---|---|
 | `VITE_IIIF_BASE_URL` | e.g. `https://abc.cloudfront.net/iiif/2` — serverless-iiif endpoint; pre-populates the URL input. Copy from the `IiifServer` nested stack's endpoint output after `sam deploy`. |
 | `VITE_MANIFEST_API_URL` | The `ManifestHttpApi` endpoint from stack outputs. |
+| `VITE_SEARCH_API_URL` | The `ManifestHttpApi` endpoint's `/search` path. Empty (search UI hidden) unless the stack was deployed with `OpenSearchEndpoint` set. |
 | `VITE_STORAGE_BUCKET` / `VITE_STORAGE_REGION` | The IIIF output S3 bucket and its region. `STORAGE_BUCKET` also configures Amplify's default `Storage.S3` bucket (used for Auth/Storage bootstrap). |
 | `VITE_SOURCE_BUCKET` | The source S3 bucket (uploads land here, under `image/`, and trigger the `iiif-image` Lambda). Used by the Assets tab's Storage Browser location. |
 | `VITE_STORAGE_IDENTITY_POOL_ID` / `VITE_COGNITO_USER_POOL_ID` / `VITE_COGNITO_CLIENT_ID` | Cognito identifiers from stack outputs, for the Amplify `Authenticator`. |

@@ -16,6 +16,20 @@ Parameters:
     Type: String
     NoEcho: true
     Description: "GitHub personal access token with repo scope (https://github.com/settings/tokens)"
+  OpenSearchDomainName:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: "Bare name of a pre-existing OpenSearch domain (used to build the IAM resource ARN). Leave blank if this stack has no search index."
+  OpenSearchEndpoint:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: "Full https:// endpoint of the OpenSearch domain (used for signed HTTP calls). Leave blank if this stack has no search index."
+  SearchIndexName:
+    Type: String
+    Default: ""
+    Description: "OpenSearch index name for this stack's works. Defaults to '<stack-name>-works' if left blank."
 
 Globals:
   Function:
@@ -25,10 +39,13 @@ Globals:
     Timeout: 300
     MemorySize: 1025
     Environment:
-      Variables: 
+      Variables:
         SOURCE_BUCKET: !Sub "${AWS::StackName}-source"
         IIIF_BUCKET: !Sub "${AWS::StackName}-iiif"
         IIIF_BASE_URL: !Sub "https://${AWS::StackName}-iiif.s3.${AWS::Region}.amazonaws.com"
+
+Conditions:
+  SearchIndexNameProvided: !Not [!Equals [!Ref SearchIndexName, ""]]
 
 Resources:
   SourceBucket:
@@ -259,6 +276,63 @@ Resources:
             Path: /manifests/{id}/items
             Method: PUT
 
+  SearchFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: false
+        Target: "node22"
+        Sourcemap: false
+        EntryPoints:
+          - aws/lambdas/search/index.js
+        External:
+          - "@aws-sdk/*"
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-search-api"
+      CodeUri: ../
+      Handler: index.handler
+      Timeout: 900
+      Environment:
+        Variables:
+          OPENSEARCH_ENDPOINT: !Ref OpenSearchEndpoint
+          SEARCH_INDEX_NAME: !If [SearchIndexNameProvided, !Ref SearchIndexName, !Sub "${AWS::StackName}-works"]
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - es:ESHttpGet
+                - es:ESHttpPut
+                - es:ESHttpPost
+                - es:ESHttpDelete
+                - es:ESHttpHead
+              Resource: !Sub "arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*"
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif"
+              Condition:
+                StringLike:
+                  s3:prefix:
+                    - "presentation/manifest/*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/presentation/manifest/*"
+      Events:
+        SearchQuery:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /search
+            Method: GET
+        SearchReindex:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /search/reindex
+            Method: POST
+
   IIIFImageFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -317,6 +391,8 @@ Resources:
           Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
         - Name: VITE_MANIFEST_API_URL
           Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/manifests"
+        - Name: VITE_SEARCH_API_URL
+          Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/search"
         - Name: VITE_STORAGE_BUCKET
           Value: !Sub "${AWS::StackName}-iiif"
         - Name: VITE_SOURCE_BUCKET
@@ -359,6 +435,9 @@ Outputs:
     Value: !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
   ManifestApiUrl:
     Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  SearchFunctionRoleArn:
+    Description: "IAM role ARN to add to the OpenSearch domain's access policy (es:ESHttp* for this stack's SearchFunction)"
+    Value: !GetAtt SearchFunctionRole.Arn
   CognitoUserPoolId:
     Value: !Ref CognitoUserPool
   CognitoClientId:
