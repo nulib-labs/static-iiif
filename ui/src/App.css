@@ -92,11 +92,28 @@ main.layout {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
+  z-index: 1;
+}
+
+.manifest-list-row:hover .assets-cell .asset-thumbnails__item:not(:first-child) {
+  transform: translateX(var(--stack-collapse-x, 0));
+  opacity: 0;
+  pointer-events: none;
+}
+
+.manifest-list-row:hover .assets-cell .asset-thumbnails__item:first-child {
+  box-shadow:
+    0 0 0 2px var(--color-panel-solid, #fff),
+    4px 0 0 2px var(--color-panel-solid, #fff),
+    4px 0 0 3px var(--gray-4);
 }
 
 .manifest-row-actions {
+  position: relative;
+  z-index: 2;
   opacity: 0;
   white-space: nowrap;
+  transition: opacity 0.15s ease;
 }
 
 .manifest-row-actions button {
@@ -121,6 +138,54 @@ main.layout {
   width: 100%;
   cursor: pointer;
   text-align: left;
+}
+
+.add-work-option {
+  width: 100%;
+  cursor: pointer;
+  text-align: left;
+}
+
+.import-preview-thumbnail {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid var(--gray-5);
+  border-radius: 6px;
+  background: var(--gray-3);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.import-preview-thumbnail img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.import-preview-thumbnail__zoom {
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--gray-12);
+  color: var(--gray-1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 1px var(--color-panel-solid, #fff);
+}
+
+.import-preview-thumbnail__zoom svg {
+  width: 12px;
+  height: 12px;
 }
 
 .asset-picker-resolved-url {

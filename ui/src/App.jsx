@@ -7,19 +7,22 @@ import {StorageBrowser} from "./storageBrowser";
 import AssetThumbnails from "./components/AssetThumbnails";
 import CloverViewer from "@samvera/clover-iiif/viewer";
 import {CLOVER_OPTIONS, CLOVER_THEME} from "./cloverTheme";
+import {PlusIcon, ZoomInIcon} from "@radix-ui/react-icons";
 import {
   Box,
   Flex,
   Card,
   Heading,
   Text,
-  Code,
   Link,
   Table,
   Button,
   TextField,
   Dialog,
+  AlertDialog,
   Callout,
+  Badge,
+  Progress,
   Tabs,
 } from "@radix-ui/themes";
 import "@aws-amplify/ui-react/styles.css";
@@ -178,8 +181,26 @@ function StorageBrowserPanel({ready}) {
   );
 }
 
-function ManifestList({manifests, selectedId}) {
+function ManifestList({manifests, selectedId, onDelete}) {
   const [previewManifest, setPreviewManifest] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
+
+  const handleConfirmDelete = async (event) => {
+    event.preventDefault();
+    if (!pendingDelete) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDelete(pendingDelete.identifier);
+      setPendingDelete(null);
+    } catch (err) {
+      setDeleteError(err.message);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   if (!manifests || manifests.length === 0) {
     return <Text as="p" size="2" color="gray" className="tree-empty">No works yet.</Text>;
@@ -190,7 +211,6 @@ function ManifestList({manifests, selectedId}) {
       <Table.Root variant="surface" className="manifest-list">
         <Table.Header>
           <Table.Row>
-            <Table.ColumnHeaderCell>ID</Table.ColumnHeaderCell>
             <Table.ColumnHeaderCell>Title</Table.ColumnHeaderCell>
             <Table.ColumnHeaderCell>Assets</Table.ColumnHeaderCell>
             <Table.ColumnHeaderCell></Table.ColumnHeaderCell>
@@ -210,21 +230,17 @@ function ManifestList({manifests, selectedId}) {
                 className={`manifest-list-row ${isActive ? "manifest-list-row--active" : ""}`}
               >
                 <Table.RowHeaderCell>
-                  <Code size="2" color="gray" variant="ghost" style={{fontSize: "var(--font-size-2)"}}>
-                    {manifest.identifier}
-                  </Code>
-                </Table.RowHeaderCell>
-                <Table.Cell>
                   <Link asChild size="2" weight="bold">
                     <RouterLink to={`/works/${encodeURIComponent(manifest.identifier)}`}>
                       {manifest.label || manifest.identifier}
                     </RouterLink>
                   </Link>
-                </Table.Cell>
+                </Table.RowHeaderCell>
                 <Table.Cell className="assets-cell">
                   <AssetThumbnails
                     services={manifest.thumbnails}
                     size={32}
+                    max={5}
                     stacked
                     count={canvasCount}
                   />
@@ -245,6 +261,17 @@ function ManifestList({manifests, selectedId}) {
                       <a href={manifest.manifestUrl} target="_blank" rel="noreferrer">
                         IIIF
                       </a>
+                    </Link>
+                    <Link asChild size="2" color="red">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDeleteError(null);
+                          setPendingDelete(manifest);
+                        }}
+                      >
+                        Delete
+                      </button>
                     </Link>
                   </Flex>
                 </Table.Cell>
@@ -268,6 +295,38 @@ function ManifestList({manifests, selectedId}) {
           )}
         </Dialog.Content>
       </Dialog.Root>
+      <AlertDialog.Root
+        open={Boolean(pendingDelete)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDelete(null);
+            setDeleteError(null);
+          }
+        }}
+      >
+        <AlertDialog.Content maxWidth="480px">
+          <AlertDialog.Title>Delete work?</AlertDialog.Title>
+          <AlertDialog.Description size="2">
+            This permanently deletes “{pendingDelete?.label || pendingDelete?.identifier}”, its manifest,
+            every source image and IIIF-generated derivative it references. This cannot be undone.
+          </AlertDialog.Description>
+          {deleteError && (
+            <Callout.Root color="red" size="1" mt="3">
+              <Callout.Text>{deleteError}</Callout.Text>
+            </Callout.Root>
+          )}
+          <Flex justify="end" gap="3" mt="4">
+            <AlertDialog.Cancel>
+              <Button type="button" variant="soft" color="gray" disabled={deleting}>
+                Cancel
+              </Button>
+            </AlertDialog.Cancel>
+            <Button type="button" color="red" onClick={handleConfirmDelete} disabled={deleting}>
+              {deleting ? "Deleting…" : "Delete"}
+            </Button>
+          </Flex>
+        </AlertDialog.Content>
+      </AlertDialog.Root>
     </>
   );
 }
@@ -443,55 +502,235 @@ function ManifestDetail({
   );
 }
 
-function ManifestModal({open, onClose, onSubmit, form, onChange, submitting, error}) {
-  const handleChange = (evt) => {
-    const {name, value} = evt.target;
-    onChange(name, value);
+function AddWorkModal({
+  open,
+  onClose,
+  step,
+  onSelectStep,
+  onBack,
+  createForm,
+  onCreateChange,
+  onCreateSubmit,
+  createSubmitting,
+  createError,
+  importUrl,
+  onImportUrlChange,
+  onImportFetch,
+  importFetching,
+  importError,
+  importPreview,
+  onImportConfirm,
+  importConfirming,
+}) {
+  const [showImportViewer, setShowImportViewer] = useState(false);
+  const [importViewerContent, setImportViewerContent] = useState(null);
+
+  const handleCreateChange = (evt) => {
+    onCreateChange(evt.target.name, evt.target.value);
   };
 
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && onClose()}>
-      <Dialog.Content maxWidth="420px">
-        <Dialog.Title>Create Work</Dialog.Title>
-        <form onSubmit={onSubmit}>
-          <Flex direction="column" gap="3">
-            <label>
-              <Text as="div" size="2" weight="medium" mb="1">Title (label)</Text>
-              <TextField.Root
-                name="label"
-                type="text"
-                required
-                value={form.label}
-                onChange={handleChange}
-                placeholder="e.g. 1973 yearbook"
-              />
-            </label>
-            <label>
-              <Text as="div" size="2" weight="medium" mb="1">ID</Text>
-              <TextField.Root
-                name="identifier"
-                type="text"
-                required
-                value={form.identifier}
-                onChange={handleChange}
-                placeholder="e.g. 1973-yearbook"
-              />
-            </label>
-            {error && (
-              <Callout.Root color="red" size="1">
-                <Callout.Text>{error}</Callout.Text>
-              </Callout.Root>
-            )}
-            <Flex justify="end" gap="3" mt="2">
-              <Button type="button" variant="soft" color="gray" onClick={onClose} disabled={submitting}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={submitting}>
-                {submitting ? "Creating…" : "Next"}
-              </Button>
+      <Dialog.Content maxWidth="560px">
+        {step === "choose" && (
+          <>
+            <Dialog.Title>Add Work</Dialog.Title>
+            <Flex direction="column" gap="3">
+              <Card asChild variant="surface" className="add-work-option">
+                <button type="button" onClick={() => onSelectStep("import-url")}>
+                  <Flex direction="column" gap="1">
+                    <Text weight="medium">Import Works</Text>
+                    <Text size="2" color="gray">Bring in an existing IIIF Manifest.</Text>
+                  </Flex>
+                </button>
+              </Card>
+              <Card variant="surface">
+                <Flex justify="between" align="center">
+                  <Flex direction="column" gap="1">
+                    <Text weight="medium" color="gray">Upload Works</Text>
+                    <Text size="2" color="gray">Upload your own image files.</Text>
+                  </Flex>
+                  <Badge color="gray">Coming soon</Badge>
+                </Flex>
+              </Card>
+              <Card asChild variant="surface" className="add-work-option">
+                <button type="button" onClick={() => onSelectStep("create")}>
+                  <Flex direction="column" gap="1">
+                    <Text weight="medium">Create Work</Text>
+                    <Text size="2" color="gray">Manually create a new, empty work.</Text>
+                  </Flex>
+                </button>
+              </Card>
+              <Flex justify="end" mt="2">
+                <Button type="button" variant="soft" color="gray" onClick={onClose}>
+                  Cancel
+                </Button>
+              </Flex>
             </Flex>
-          </Flex>
-        </form>
+          </>
+        )}
+
+        {step === "create" && (
+          <>
+            <Dialog.Title>Create Work</Dialog.Title>
+            <form onSubmit={onCreateSubmit}>
+              <Flex direction="column" gap="3">
+                <label>
+                  <Text as="div" size="2" weight="medium" mb="1">Title</Text>
+                  <TextField.Root
+                    name="label"
+                    type="text"
+                    required
+                    value={createForm.label}
+                    onChange={handleCreateChange}
+                    placeholder="e.g. 1973 yearbook"
+                  />
+                </label>
+                {createError && (
+                  <Callout.Root color="red" size="1">
+                    <Callout.Text>{createError}</Callout.Text>
+                  </Callout.Root>
+                )}
+                <Flex justify="between" gap="3" mt="2">
+                  <Button type="button" variant="ghost" onClick={onBack} disabled={createSubmitting}>
+                    ← Back
+                  </Button>
+                  <Flex gap="3">
+                    <Button type="button" variant="soft" color="gray" onClick={onClose} disabled={createSubmitting}>
+                      Cancel
+                    </Button>
+                    <Button type="submit" disabled={createSubmitting}>
+                      {createSubmitting ? "Creating…" : "Create"}
+                    </Button>
+                  </Flex>
+                </Flex>
+              </Flex>
+            </form>
+          </>
+        )}
+
+        {step === "import-url" && (
+          <>
+            <Dialog.Title>Import Work</Dialog.Title>
+            <form onSubmit={onImportFetch}>
+              <Flex direction="column" gap="3">
+                <label>
+                  <Text as="div" size="2" weight="medium" mb="1">Manifest URL</Text>
+                  <TextField.Root
+                    type="url"
+                    required
+                    value={importUrl}
+                    onChange={(evt) => onImportUrlChange(evt.target.value)}
+                    placeholder="https://example.org/iiif/manifest.json"
+                  />
+                </label>
+                {importError && (
+                  <Callout.Root color="red" size="1">
+                    <Callout.Text>{importError}</Callout.Text>
+                  </Callout.Root>
+                )}
+                <Flex justify="between" gap="3" mt="2">
+                  <Button type="button" variant="ghost" onClick={onBack} disabled={importFetching}>
+                    ← Back
+                  </Button>
+                  <Flex gap="3">
+                    <Button type="button" variant="soft" color="gray" onClick={onClose} disabled={importFetching}>
+                      Cancel
+                    </Button>
+                    <Button type="submit" disabled={importFetching}>
+                      {importFetching ? "Fetching…" : "Fetch"}
+                    </Button>
+                  </Flex>
+                </Flex>
+              </Flex>
+            </form>
+          </>
+        )}
+
+        {step === "import-preview" && (
+          <>
+            <Dialog.Title>Confirm Import</Dialog.Title>
+            <Flex direction="column" gap="3">
+              <Card variant="surface">
+                <Flex gap="3" align="center">
+                  <button
+                    type="button"
+                    className="import-preview-thumbnail"
+                    onClick={() => {
+                      // Clover mutates the manifest object it's given, so hand it a
+                      // disposable clone — the original must stay intact for Import.
+                      setImportViewerContent(structuredClone(importPreview.manifest));
+                      setShowImportViewer(true);
+                    }}
+                    aria-label="Preview manifest"
+                  >
+                    {importPreview?.thumbnail ? (
+                      <img
+                        src={`${importPreview.thumbnail.replace(/\/$/, "")}/full/,128/0/default.jpg`}
+                        alt=""
+                        onError={(evt) => {
+                          evt.currentTarget.style.display = "none";
+                        }}
+                      />
+                    ) : (
+                      <Text size="1" color="gray">Preview</Text>
+                    )}
+                    <span className="import-preview-thumbnail__zoom">
+                      <ZoomInIcon />
+                    </span>
+                  </button>
+                  <Flex direction="column" gap="1" style={{flex: 1, minWidth: 0}}>
+                    <Text weight="medium">{importPreview?.label || "(untitled)"}</Text>
+                    <Text size="2" color="gray">
+                      {importPreview?.itemCount ?? 0} canvas{importPreview?.itemCount === 1 ? "" : "es"}
+                    </Text>
+                    <Text size="1" color="gray" style={{wordBreak: "break-all"}}>
+                      {importPreview?.sourceUrl}
+                    </Text>
+                  </Flex>
+                </Flex>
+              </Card>
+              {importError && (
+                <Callout.Root color="red" size="1">
+                  <Callout.Text>{importError}</Callout.Text>
+                </Callout.Root>
+              )}
+              <Flex justify="between" gap="3" mt="2">
+                <Button type="button" variant="ghost" onClick={onBack} disabled={importConfirming}>
+                  ← Back
+                </Button>
+                <Flex gap="3">
+                  <Button type="button" variant="soft" color="gray" onClick={onClose} disabled={importConfirming}>
+                    Cancel
+                  </Button>
+                  <Button type="button" onClick={onImportConfirm} disabled={importConfirming}>
+                    {importConfirming ? "Importing…" : "Import"}
+                  </Button>
+                </Flex>
+              </Flex>
+            </Flex>
+            <Dialog.Root open={showImportViewer} onOpenChange={setShowImportViewer}>
+              <Dialog.Content maxWidth="800px">
+                <Flex justify="between" align="center" mb="2">
+                  <Dialog.Title mb="0">{importPreview?.label || "Preview"}</Dialog.Title>
+                  <Button type="button" variant="ghost" onClick={() => setShowImportViewer(false)}>
+                    ← Back
+                  </Button>
+                </Flex>
+                {importViewerContent && (
+                  <Box className="viewer-stage" style={{width: "100%"}}>
+                    <CloverViewer
+                      key={importPreview?.sourceUrl}
+                      iiifContent={importViewerContent}
+                      customTheme={CLOVER_THEME}
+                      options={CLOVER_OPTIONS}
+                    />
+                  </Box>
+                )}
+              </Dialog.Content>
+            </Dialog.Root>
+          </>
+        )}
       </Dialog.Content>
     </Dialog.Root>
   );
@@ -638,6 +877,7 @@ function WorksListPanel({
   manifests,
   selectedManifestId,
   onOpenManifestModal,
+  onDeleteManifest,
 }) {
   const searchApiAvailable = Boolean(SEARCH_API_BASE);
   const [searchQuery, setSearchQuery] = useState("");
@@ -730,7 +970,7 @@ function WorksListPanel({
             onClick={onOpenManifestModal}
             disabled={!manifestApiAvailable}
           >
-            Add Work
+            <PlusIcon /> Add
           </Button>
         </Flex>
         <Box className="panel-body manifest-panel-body">
@@ -767,6 +1007,7 @@ function WorksListPanel({
             <ManifestList
               manifests={manifests}
               selectedId={selectedManifestId}
+              onDelete={onDeleteManifest}
             />
           )}
         </Box>
@@ -775,18 +1016,27 @@ function WorksListPanel({
   );
 }
 
+const IMPORT_STALE_MS = 6 * 60 * 1000;
+
 function WorkDetailPanel({
   manifestDetail,
   manifestDetailLoading,
   manifestDetailError,
+  importStatus,
+  onResumeImport,
   onAddCanvas,
   canAddCanvas,
+  importStale,
   onReorderCanvas,
   onRemoveCanvas,
   canvasSaving,
   canvasActionError,
   disableAddReason,
 }) {
+  const isFailed = importStatus?.status === "failed";
+  const isStale = importStatus?.status === "in-progress" && importStale;
+  const importInProgress = importStatus?.status === "in-progress" && !isStale;
+
   return (
     <Flex direction="column" gap="5">
       {manifestDetail && (
@@ -799,6 +1049,31 @@ function WorkDetailPanel({
             <Text style={{color: "var(--gray-8)"}}>/</Text>
             <Text color="gray">{manifestDetail.identifier}</Text>
           </Flex>
+        </Flex>
+      )}
+      {(isFailed || isStale) && (
+        <Callout.Root color={isFailed ? "red" : "orange"} size="1">
+          <Callout.Text>
+            {isFailed
+              ? `Image import failed${importStatus.error ? `: ${importStatus.error}` : ""}.`
+              : "Image import hasn't made progress in a while — it may have stalled."}
+            {" "}
+            <Link asChild>
+              <button type="button" onClick={() => onResumeImport(manifestDetail.identifier)}>
+                Resume
+              </button>
+            </Link>
+          </Callout.Text>
+        </Callout.Root>
+      )}
+      {importInProgress && (
+        <Flex direction="column" gap="1">
+          <Text size="2" color="gray">
+            Importing image {Math.min((importStatus.currentIndex ?? 0) + 1, importStatus.total)} of{" "}
+            {importStatus.total}
+            {importStatus.phase ? ` — ${importStatus.phase}` : ""}
+          </Text>
+          <Progress value={importStatus.completed} max={importStatus.total || 1} />
         </Flex>
       )}
       <Card size="3" className="panel viewer-panel">
@@ -876,10 +1151,19 @@ export default function App({ signOut }) {
   const [manifestDetail, setManifestDetail] = useState(null);
   const [manifestDetailLoading, setManifestDetailLoading] = useState(false);
   const [manifestDetailError, setManifestDetailError] = useState(null);
+  const [importStatus, setImportStatus] = useState(null);
+  const [importStale, setImportStale] = useState(false);
+  const [importPollGeneration, setImportPollGeneration] = useState(0);
   const [isManifestModalOpen, setManifestModalOpen] = useState(false);
-  const [manifestForm, setManifestForm] = useState({label: "", identifier: ""});
+  const [manifestModalStep, setManifestModalStep] = useState("choose");
+  const [manifestForm, setManifestForm] = useState({label: ""});
   const [manifestFormError, setManifestFormError] = useState(null);
   const [manifestFormSubmitting, setManifestFormSubmitting] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+  const [importPreview, setImportPreview] = useState(null);
+  const [importError, setImportError] = useState(null);
+  const [importFetching, setImportFetching] = useState(false);
+  const [importConfirming, setImportConfirming] = useState(false);
   const [isCanvasModalOpen, setCanvasModalOpen] = useState(false);
   const [canvasForm, setCanvasForm] = useState({assetKey: "", label: ""});
   const [canvasModalError, setCanvasModalError] = useState(null);
@@ -924,6 +1208,45 @@ export default function App({ signOut }) {
     }
   }, [manifestApiAvailable, manifestApiUrl]);
 
+  const handleDeleteManifest = useCallback(
+    async (identifier) => {
+      const endpoint = manifestApiUrl(encodeURIComponent(identifier));
+      if (!endpoint) {
+        throw new Error("Work API unavailable");
+      }
+      const response = await fetch(endpoint, {
+        method: "DELETE",
+        headers: await authHeaders(),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to delete work");
+      }
+      await refreshManifests();
+    },
+    [manifestApiUrl, refreshManifests],
+  );
+
+  const handleResumeImport = useCallback(
+    async (identifier) => {
+      const endpoint = manifestApiUrl(`${encodeURIComponent(identifier)}/import-resume`);
+      if (!endpoint) {
+        throw new Error("Work API unavailable");
+      }
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to resume import");
+      }
+      setImportStatus(data);
+      setImportPollGeneration((g) => g + 1); // restart polling if it had stopped (e.g. after a failure)
+    },
+    [manifestApiUrl],
+  );
+
   const fetchManifestDetail = useCallback(async (identifier) => {
     if (!identifier || !manifestApiAvailable) {
       setManifestDetail(null);
@@ -958,13 +1281,7 @@ export default function App({ signOut }) {
   }, [manifestApiAvailable, manifestApiUrl]);
 
   const handleManifestFieldChange = useCallback((name, value) => {
-    setManifestForm((prev) => {
-      if (name === "label") {
-        const fallbackId = prev.identifier.trim() ? prev.identifier : slugifyManifestId(value);
-        return {...prev, label: value, identifier: fallbackId};
-      }
-      return {...prev, [name]: value};
-    });
+    setManifestForm((prev) => ({...prev, [name]: value}));
   }, []);
 
   const handleCanvasFieldChange = useCallback((name, value) => {
@@ -973,24 +1290,36 @@ export default function App({ signOut }) {
 
   const handleOpenManifestModal = () => {
     if (!manifestApiAvailable) return;
-    setManifestForm({label: "", identifier: ""});
+    setManifestModalStep("choose");
+    setManifestForm({label: ""});
     setManifestFormError(null);
+    setImportUrl("");
+    setImportPreview(null);
+    setImportError(null);
     setManifestModalOpen(true);
   };
 
   const handleCloseManifestModal = () => {
     setManifestModalOpen(false);
     setManifestFormError(null);
+    setImportError(null);
+  };
+
+  const handleModalBack = () => {
+    if (manifestModalStep === "import-preview") {
+      setImportPreview(null);
+      setImportError(null);
+      setManifestModalStep("import-url");
+    } else {
+      setManifestModalStep("choose");
+    }
   };
 
   const handleManifestSubmit = async (event) => {
     event.preventDefault();
-    const payload = {
-      label: manifestForm.label.trim(),
-      identifier: manifestForm.identifier.trim(),
-    };
-    if (!payload.label || !payload.identifier) {
-      setManifestFormError("Both label and id are required");
+    const label = manifestForm.label.trim();
+    if (!label) {
+      setManifestFormError("A title is required");
       return;
     }
     setManifestFormSubmitting(true);
@@ -1003,19 +1332,79 @@ export default function App({ signOut }) {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {"Content-Type": "application/json", ...(await authHeaders())},
-        body: JSON.stringify(payload),
+        body: JSON.stringify({label}),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.error || "Unable to create work");
       }
       await refreshManifests();
-      selectWork(data.manifest?.identifier || payload.identifier);
+      selectWork(data.manifest?.identifier);
       setManifestModalOpen(false);
     } catch (err) {
       setManifestFormError(err.message);
     } finally {
       setManifestFormSubmitting(false);
+    }
+  };
+
+  const handleImportFetch = async (event) => {
+    event.preventDefault();
+    const sourceUrl = importUrl.trim();
+    if (!sourceUrl) {
+      setImportError("A manifest URL is required");
+      return;
+    }
+    setImportFetching(true);
+    setImportError(null);
+    try {
+      const endpoint = manifestApiUrl("import/preview");
+      if (!endpoint) {
+        throw new Error("Work API unavailable");
+      }
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {"Content-Type": "application/json", ...(await authHeaders())},
+        body: JSON.stringify({sourceUrl}),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to fetch that manifest");
+      }
+      setImportPreview(data);
+      setManifestModalStep("import-preview");
+    } catch (err) {
+      setImportError(err.message);
+    } finally {
+      setImportFetching(false);
+    }
+  };
+
+  const handleImportConfirm = async () => {
+    if (!importPreview) return;
+    setImportConfirming(true);
+    setImportError(null);
+    try {
+      const endpoint = manifestApiUrl("import");
+      if (!endpoint) {
+        throw new Error("Work API unavailable");
+      }
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {"Content-Type": "application/json", ...(await authHeaders())},
+        body: JSON.stringify({sourceUrl: importPreview.sourceUrl, manifest: importPreview.manifest}),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to import that manifest");
+      }
+      await refreshManifests();
+      selectWork(data.manifest?.identifier);
+      setManifestModalOpen(false);
+    } catch (err) {
+      setImportError(err.message);
+    } finally {
+      setImportConfirming(false);
     }
   };
 
@@ -1152,6 +1541,51 @@ export default function App({ signOut }) {
     fetchManifestDetail(selectedManifestId);
   }, [fetchManifestDetail, manifestApiAvailable, selectedManifestId]);
 
+  useEffect(() => {
+    if (!selectedManifestId || !manifestApiAvailable) {
+      setImportStatus(null);
+      setImportStale(false);
+      return;
+    }
+    let cancelled = false;
+    let intervalId = null;
+    let previousStatus = null;
+
+    const poll = async () => {
+      const endpoint = manifestApiUrl(`${encodeURIComponent(selectedManifestId)}/import-status`);
+      if (!endpoint) return;
+      try {
+        const response = await fetch(endpoint, {headers: await authHeaders()});
+        const data = await response.json().catch(() => null);
+        if (cancelled || !data) return;
+        if (previousStatus === "in-progress" && data.status === "complete") {
+          fetchManifestDetail(selectedManifestId);
+        }
+        previousStatus = data.status;
+        setImportStatus(data);
+        setImportStale(
+          data.status === "in-progress" &&
+            Boolean(data.updatedAt) &&
+            Date.now() - Date.parse(data.updatedAt) > IMPORT_STALE_MS,
+        );
+        if (data.status !== "in-progress" && intervalId) {
+          clearInterval(intervalId);
+          intervalId = null;
+        }
+      } catch {
+        // ignore transient polling errors
+      }
+    };
+
+    poll();
+    intervalId = setInterval(poll, 2000);
+
+    return () => {
+      cancelled = true;
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [selectedManifestId, manifestApiAvailable, manifestApiUrl, fetchManifestDetail, importPollGeneration]);
+
   const canAddCanvas = Boolean(manifestDetail) && manifestApiAvailable;
   const disableAddReason = (() => {
     if (!manifestDetail) return null;
@@ -1190,6 +1624,9 @@ export default function App({ signOut }) {
                 manifestDetail={manifestDetail}
                 manifestDetailLoading={manifestDetailLoading}
                 manifestDetailError={manifestDetailError}
+                importStatus={importStatus}
+                importStale={importStale}
+                onResumeImport={handleResumeImport}
                 onAddCanvas={handleOpenCanvasModal}
                 canAddCanvas={canAddCanvas}
                 onReorderCanvas={handleReorderCanvas}
@@ -1206,6 +1643,7 @@ export default function App({ signOut }) {
                 manifests={manifests}
                 selectedManifestId={selectedManifestId}
                 onOpenManifestModal={handleOpenManifestModal}
+                onDeleteManifest={handleDeleteManifest}
               />
             )}
           </Tabs.Content>
@@ -1216,14 +1654,25 @@ export default function App({ signOut }) {
           </Tabs.Content>
         </Box>
       </Tabs.Root>
-      <ManifestModal
+      <AddWorkModal
         open={isManifestModalOpen}
         onClose={handleCloseManifestModal}
-        onSubmit={handleManifestSubmit}
-        form={manifestForm}
-        onChange={handleManifestFieldChange}
-        submitting={manifestFormSubmitting}
-        error={manifestFormError}
+        step={manifestModalStep}
+        onSelectStep={setManifestModalStep}
+        onBack={handleModalBack}
+        createForm={manifestForm}
+        onCreateChange={handleManifestFieldChange}
+        onCreateSubmit={handleManifestSubmit}
+        createSubmitting={manifestFormSubmitting}
+        createError={manifestFormError}
+        importUrl={importUrl}
+        onImportUrlChange={setImportUrl}
+        onImportFetch={handleImportFetch}
+        importFetching={importFetching}
+        importError={importError}
+        importPreview={importPreview}
+        onImportConfirm={handleImportConfirm}
+        importConfirming={importConfirming}
       />
       <AddCanvasModal
         open={isCanvasModalOpen}

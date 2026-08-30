@@ -1,11 +1,27 @@
 import "./AssetThumbnails.css";
 
+const ITEM_REM = 1.5; // matches .asset-thumbnails__item's fixed width/height
+const STACK_OVERLAP_REM = 0.55; // constant overlap between every pair of stacked items
+
 function iiifThumbnailUrl(serviceId, size) {
   return `${serviceId.replace(/\/$/, "")}/full/,${size}/0/default.jpg`;
 }
 
 function hideOnError(event) {
   event.currentTarget.style.display = "none";
+}
+
+// Stacked layout: every item overlaps the previous one by the same fixed
+// amount, front-to-back z-index so the first item always reads as the top.
+function stackStyle(index, count) {
+  if (index === 0) {
+    return {zIndex: count};
+  }
+  return {
+    zIndex: count - index,
+    marginLeft: `${-STACK_OVERLAP_REM}rem`,
+    "--stack-collapse-x": `${-(index * (ITEM_REM - STACK_OVERLAP_REM))}rem`,
+  };
 }
 
 export default function AssetThumbnails({services, size = 32, max, count, stacked = false, className}) {
@@ -27,6 +43,7 @@ export default function AssetThumbnails({services, size = 32, max, count, stacke
             alt=""
             loading="lazy"
             onError={hideOnError}
+            style={stacked ? stackStyle(index, visible.length) : undefined}
           />
         ))}
       </div>

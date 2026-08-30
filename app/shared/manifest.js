@@ -25,19 +25,38 @@ function manifestObjectKey(identifier) {
   return `${MANIFEST_PREFIX}/${normalized}/${MANIFEST_OBJECT}`;
 }
 
-function createManifestTemplate({baseUrl, identifier, label}) {
+function buildManifestId(baseUrl, identifier) {
   const normalizedBase = (baseUrl || "").replace(/\/$/, "");
   const manifestKey = manifestObjectKey(identifier);
-  const manifestId = normalizedBase ? `${normalizedBase}/${manifestKey}` : manifestKey;
+  return normalizedBase ? `${normalizedBase}/${manifestKey}` : manifestKey;
+}
+
+function createManifestTemplate({baseUrl, identifier, label}) {
   return {
     "@context": "http://iiif.io/api/presentation/3/context.json",
-    id: manifestId,
+    id: buildManifestId(baseUrl, identifier),
     type: "Manifest",
     label: {
       none: [label],
     },
     items: [],
   };
+}
+
+function extractLabel(labelValue) {
+  if (typeof labelValue === "string") {
+    return labelValue;
+  }
+  if (Array.isArray(labelValue)) {
+    return labelValue.find((entry) => typeof entry === "string") || "";
+  }
+  if (labelValue && typeof labelValue === "object") {
+    const candidates = labelValue.none || Object.values(labelValue)[0];
+    if (Array.isArray(candidates)) {
+      return candidates.find((entry) => typeof entry === "string") || "";
+    }
+  }
+  return "";
 }
 
 async function streamToString(body) {
@@ -72,7 +91,7 @@ function canvasThumbnailService(canvas) {
 }
 
 function manifestSummary(identifier, manifest) {
-  const label = manifest?.label?.none?.[0] || "";
+  const label = extractLabel(manifest?.label);
   const items = Array.isArray(manifest?.items) ? manifest.items : [];
   return {
     identifier,
@@ -123,7 +142,9 @@ module.exports = {
   manifestIdPattern,
   sanitizeManifestIdentifier,
   manifestObjectKey,
+  buildManifestId,
   createManifestTemplate,
+  extractLabel,
   readManifest,
   canvasThumbnailService,
   manifestSummary,

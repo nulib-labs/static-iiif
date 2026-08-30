@@ -11,15 +11,7 @@
 
 .asset-thumbnails--stacked {
   flex-wrap: nowrap;
-}
-
-.asset-thumbnails--stacked .asset-thumbnails__item {
-  margin-left: -0.5rem;
-  box-shadow: 0 0 0 2px var(--color-panel-solid, #fff);
-}
-
-.asset-thumbnails--stacked .asset-thumbnails__item:first-child {
-  margin-left: 0;
+  gap: 0;
 }
 
 .asset-thumbnails__item {
@@ -27,15 +19,17 @@
   width: 1.5rem;
   height: 1.5rem;
   border-radius: 4px;
-  border: 1px solid #e2e8f0;
+  border: 2px solid var(--color-panel-solid, #fff);
   object-fit: cover;
   background: #f1f5f9;
+  transition: transform 0.25s ease, opacity 0.1s ease, box-shadow 0.25s ease;
 }
 
 .asset-thumbnails__badge {
   position: absolute;
   top: -0.4rem;
-  right: -0.4rem;
+  left: 0.95rem;
+  z-index: 10;
   min-width: 1.1rem;
   height: 1.1rem;
   padding: 0 0.25rem;
