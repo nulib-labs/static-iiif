@@ -157,8 +157,8 @@ async function deleteByPrefix(targetBucket, prefix) {
 }
 
 async function deleteManifestAssets(identifier, manifest) {
-  const importsPrefix = `image/imports/${identifier}/`;
-  await Promise.all([deleteByPrefix(sourceBucket, importsPrefix), deleteByPrefix(bucket, importsPrefix)]);
+  const assetPrefix = `image/${identifier}/`;
+  await Promise.all([deleteByPrefix(sourceBucket, assetPrefix), deleteByPrefix(bucket, assetPrefix)]);
 
   const items = Array.isArray(manifest?.items) ? manifest.items : [];
   const extraSourceKeys = [];
@@ -166,7 +166,7 @@ async function deleteManifestAssets(identifier, manifest) {
   for (const canvas of items) {
     const serviceId = canvas?.items?.[0]?.items?.[0]?.body?.service?.[0]?.id;
     const keyWithoutExt = keyFromImageServiceId(serviceId);
-    if (!keyWithoutExt || keyWithoutExt.startsWith(importsPrefix)) {
+    if (!keyWithoutExt || keyWithoutExt.startsWith(assetPrefix)) {
       continue; // already handled by the prefix delete above
     }
     extraIiifKeys.push(`${keyWithoutExt}.tif`);

@@ -157,6 +157,73 @@ function paintingBody(canvas) {
   return canvas?.items?.[0]?.items?.[0]?.body || null;
 }
 
+function localService(serviceId, isV3) {
+  return {
+    id: serviceId,
+    type: isV3 ? "ImageService3" : "ImageService2",
+    profile: isV3 ? "level2" : "http://iiif.io/api/image/2/level2.json",
+  };
+}
+
+// A IIIF Image API request tail: {region}/{size}/{rotation}/{quality}.{format}.
+// Matched strictly so a plain, non-IIIF image URL (some sources use one for
+// their thumbnails) falls back rather than being mangled into a broken path.
+const IMAGE_REQUEST_PATTERN =
+  /\/(full|square|pct:[\d.,]+|\d+,\d+,\d+,\d+)\/(max|full|pct:[\d.]+|!?\d*,\d*)\/(!?[\d.]+)\/[^/]+$/;
+
+// Rewrites a source Image API URL onto our own service, preserving the region,
+// size and rotation the source asked for (e.g. a "!300,300" thumbnail stays a
+// "!300,300" thumbnail) and translating the v2/v3 full-size keyword.
+function localImageUrl(sourceUrl, serviceId, isV3) {
+  const parts = IMAGE_REQUEST_PATTERN.exec(sourceUrl || "");
+  if (!parts) {
+    return `${serviceId}/full/${isV3 ? "max" : "full"}/0/default.jpg`;
+  }
+  const [, region, rawSize, rotation] = parts;
+  let size = rawSize;
+  if (size === "max" && !isV3) size = "full";
+  if (size === "full" && isV3) size = "max";
+  return `${serviceId}/${region}/${size}/${rotation}/default.jpg`;
+}
+
+// Repoints a IIIF list of Image resources (canvas.thumbnail, manifest.thumbnail…)
+// at our own service.
+function repointImageResources(resources, serviceId, isV3) {
+  if (!Array.isArray(resources)) return;
+  for (const resource of resources) {
+    if (!resource?.id) continue;
+    resource.id = localImageUrl(resource.id, serviceId, isV3);
+    if (Array.isArray(resource.service)) {
+      resource.service = [localService(serviceId, isV3)];
+    }
+  }
+}
+
+// A canvas's thumbnail and placeholderCanvas are derivatives of the same source
+// image as its painting body, so they follow it to the service we just created.
+function repointCanvasDerivatives(canvas, serviceId, isV3) {
+  repointImageResources(canvas?.thumbnail, serviceId, isV3);
+  for (const page of canvas?.placeholderCanvas?.items || []) {
+    for (const annotation of page?.items || []) {
+      if (annotation?.body) {
+        repointImageResources([annotation.body], serviceId, isV3);
+      }
+    }
+  }
+}
+
+// Many sources expose a manifest-level thumbnail as a plain URL on their own
+// API with no image service behind it. Rather than copy a second, redundant
+// derivative, point it at the first canvas's freshly migrated thumbnail.
+function repointManifestThumbnail(manifest) {
+  const firstThumbnail = manifest?.items?.[0]?.thumbnail?.[0];
+  const serviceId = firstThumbnail?.service?.[0]?.id;
+  if (!firstThumbnail?.id || !serviceId) return false;
+  if (!imageApiBase || !serviceId.startsWith(imageApiBase)) return false;
+  manifest.thumbnail = [structuredClone(firstThumbnail)];
+  return true;
+}
+
 async function copyCanvasAsset({identifier, canvasIndex, total, canvas}) {
   const reportPhase = (phase) =>
     writeImportStatus(identifier, {
@@ -174,7 +241,10 @@ async function copyCanvasAsset({identifier, canvasIndex, total, canvas}) {
     return;
   }
   if (imageApiBase && serviceId.startsWith(imageApiBase)) {
-    return; // already pointing at our own Image API
+    // Image is already ours. Its derivatives may not be: earlier imports
+    // repointed the painting body only, so make them catch up.
+    repointCanvasDerivatives(canvas, serviceId, body.service[0]?.type === "ImageService3");
+    return;
   }
 
   await reportPhase("Fetching image info…");
@@ -187,7 +257,7 @@ async function copyCanvasAsset({identifier, canvasIndex, total, canvas}) {
     throw new Error(`Unable to download image from ${imageUrl} (status ${imageResponse.status})`);
   }
 
-  const baseKey = `image/imports/${identifier}/${canvasIndex}`;
+  const baseKey = `image/${identifier}/${canvasIndex}`;
   await reportPhase("Uploading to your library…");
   const upload = new Upload({
     client: s3,
@@ -220,7 +290,7 @@ async function copyCanvasAsset({identifier, canvasIndex, total, canvas}) {
     throw new Error(`Timed out waiting for pyramid conversion of ${tiffKey}`);
   }
 
-  await reportPhase("Updating manifest…");
+  await reportPhase("Repointing image and thumbnails…");
   const localInfo = await fetchJson(`${imageApiBase}/${encodeURIComponent(baseKey)}/info.json`);
   const localIsV3 = detectImageApiVersion(localInfo) === 3;
   const localServiceId = (localInfo?.id || localInfo?.["@id"] || "").replace(/\/$/, "");
@@ -231,14 +301,10 @@ async function copyCanvasAsset({identifier, canvasIndex, total, canvas}) {
     format: "image/jpeg",
     width: localInfo.width,
     height: localInfo.height,
-    service: [
-      {
-        id: localServiceId,
-        type: localIsV3 ? "ImageService3" : "ImageService2",
-        profile: localIsV3 ? "level2" : "http://iiif.io/api/image/2/level2.json",
-      },
-    ],
+    service: [localService(localServiceId, localIsV3)],
   };
+
+  repointCanvasDerivatives(canvas, localServiceId, localIsV3);
 }
 
 async function handleImportAssets({identifier, canvasIndex}) {
@@ -257,6 +323,16 @@ async function handleImportAssets({identifier, canvasIndex}) {
 
   const items = Array.isArray(manifest.items) ? manifest.items : [];
   if (canvasIndex >= items.length) {
+    await writeImportStatus(identifier, {
+      status: "in-progress",
+      total: items.length,
+      completed: items.length,
+      currentIndex: items.length,
+      phase: "Updating manifest thumbnail…",
+    });
+    if (repointManifestThumbnail(manifest)) {
+      await writeManifest(identifier, manifest);
+    }
     await writeImportStatus(identifier, {status: "complete", total: items.length, completed: items.length});
     console.log(`Import-assets: finished copying assets for ${identifier}`);
     return;
