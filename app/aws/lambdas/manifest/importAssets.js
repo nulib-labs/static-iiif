@@ -91,10 +91,22 @@ async function resumeAssetImport({identifier}) {
   if (status.status !== "in-progress" && status.status !== "failed") {
     return status; // nothing to resume
   }
-  const canvasIndex = typeof status.currentIndex === "number" ? status.currentIndex : status.completed || 0;
+  const stoppedAt = typeof status.currentIndex === "number" ? status.currentIndex : status.completed || 0;
+  // Rewind to the earliest canvas that failed so a retry actually re-attempts it.
+  // Canvases already copied are skipped cheaply (copyCanvasAsset no-ops once a
+  // canvas points at our own Image API), so re-walking from there costs little.
+  const failures = Array.isArray(status.failures) ? status.failures : [];
+  const earliestFailure = failures.reduce(
+    (min, f) => (typeof f?.canvasIndex === "number" ? Math.min(min, f.canvasIndex) : min),
+    Infinity,
+  );
+  const canvasIndex = Number.isFinite(earliestFailure) ? Math.min(earliestFailure, stoppedAt) : stoppedAt;
+
   await writeImportStatus(identifier, {
     ...status,
     status: "in-progress",
+    currentIndex: canvasIndex,
+    failures: [],
     error: undefined,
   });
   await invokeSelf({action: "importAssets", identifier, canvasIndex});
@@ -224,13 +236,14 @@ function repointManifestThumbnail(manifest) {
   return true;
 }
 
-async function copyCanvasAsset({identifier, canvasIndex, total, canvas}) {
+async function copyCanvasAsset({identifier, canvasIndex, total, canvas, failures = []}) {
   const reportPhase = (phase) =>
     writeImportStatus(identifier, {
       status: "in-progress",
       total,
       completed: canvasIndex,
       currentIndex: canvasIndex,
+      failures,
       phase,
     });
 
@@ -310,6 +323,14 @@ async function copyCanvasAsset({identifier, canvasIndex, total, canvas}) {
 async function handleImportAssets({identifier, canvasIndex}) {
   if (!identifier || typeof canvasIndex !== "number" || canvasIndex > MAX_CANVAS_INDEX) {
     console.error("Import-assets: invalid or runaway payload", {identifier, canvasIndex});
+    if (identifier) {
+      // Leave a terminal record; otherwise the status object is stranded at
+      // "in-progress" forever and the UI polls it indefinitely.
+      const previous = await readImportStatus(identifier).catch(() => null);
+      if (previous && previous.status === "in-progress") {
+        await writeImportStatus(identifier, {...previous, status: "failed", error: "Import stopped: invalid state"});
+      }
+    }
     return;
   }
 
@@ -318,8 +339,15 @@ async function handleImportAssets({identifier, canvasIndex}) {
     manifest = await readManifest(identifier);
   } catch (error) {
     console.error(`Import-assets: manifest ${identifier} not found`, error);
+    const previous = await readImportStatus(identifier).catch(() => null);
+    if (previous && previous.status === "in-progress") {
+      await writeImportStatus(identifier, {...previous, status: "failed", error: "Manifest could not be read"});
+    }
     return;
   }
+
+  const previousStatus = await readImportStatus(identifier).catch(() => null);
+  const failures = Array.isArray(previousStatus?.failures) ? previousStatus.failures : [];
 
   const items = Array.isArray(manifest.items) ? manifest.items : [];
   if (canvasIndex >= items.length) {
@@ -328,21 +356,41 @@ async function handleImportAssets({identifier, canvasIndex}) {
       total: items.length,
       completed: items.length,
       currentIndex: items.length,
+      failures,
       phase: "Updating manifest thumbnail…",
     });
     if (repointManifestThumbnail(manifest)) {
       await writeManifest(identifier, manifest);
     }
-    await writeImportStatus(identifier, {status: "complete", total: items.length, completed: items.length});
-    console.log(`Import-assets: finished copying assets for ${identifier}`);
+    // A canvas that failed to copy still points at the source, so the import is
+    // not "complete" just because the chain reached the end.
+    await writeImportStatus(identifier, {
+      status: failures.length ? "failed" : "complete",
+      total: items.length,
+      completed: items.length,
+      failures,
+      error: failures.length
+        ? `${failures.length} of ${items.length} image${failures.length === 1 ? "" : "s"} could not be copied`
+        : undefined,
+    });
+    console.log(
+      `Import-assets: finished ${identifier} with ${failures.length} failure(s) of ${items.length}`,
+    );
     return;
   }
 
   try {
-    await copyCanvasAsset({identifier, canvasIndex, total: items.length, canvas: items[canvasIndex]});
+    await copyCanvasAsset({
+      identifier,
+      canvasIndex,
+      total: items.length,
+      canvas: items[canvasIndex],
+      failures,
+    });
     await writeManifest(identifier, manifest);
   } catch (error) {
     console.error(`Import-assets: canvas ${canvasIndex} of ${identifier} failed`, error);
+    failures.push({canvasIndex, error: error.message});
   }
 
   await writeImportStatus(identifier, {
@@ -350,6 +398,7 @@ async function handleImportAssets({identifier, canvasIndex}) {
     total: items.length,
     completed: canvasIndex + 1,
     currentIndex: canvasIndex + 1,
+    failures,
     phase: null,
   });
 

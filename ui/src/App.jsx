@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useState} from "react";
+import {useCallback, useEffect, useMemo, useState} from "react";
 import {Link as RouterLink, useNavigate, useParams} from "react-router-dom";
 import {Amplify} from "aws-amplify";
 import {fetchAuthSession} from "aws-amplify/auth";
@@ -7,7 +7,13 @@ import {StorageBrowser} from "./storageBrowser";
 import AssetThumbnails from "./components/AssetThumbnails";
 import CloverViewer from "@samvera/clover-iiif/viewer";
 import {CLOVER_OPTIONS, CLOVER_THEME} from "./cloverTheme";
-import {PlusIcon, ZoomInIcon} from "@radix-ui/react-icons";
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  PlusIcon,
+  TrashIcon,
+  ZoomInIcon,
+} from "@radix-ui/react-icons";
 import {
   Box,
   Flex,
@@ -17,6 +23,8 @@ import {
   Link,
   Table,
   Button,
+  IconButton,
+  Tooltip,
   TextField,
   Dialog,
   AlertDialog,
@@ -65,6 +73,29 @@ async function authHeaders() {
   } catch {
     return {};
   }
+}
+
+// Every call against our API repeats the same four steps: attach the Cognito
+// token, send JSON, tolerate a non-JSON body, and throw the API's own error
+// message. Doing it once keeps the error contract identical everywhere.
+async function apiFetch(url, {method = "GET", body, errorMessage = "Request failed"} = {}) {
+  if (!url) {
+    throw new Error("Work API unavailable");
+  }
+  const headers = await authHeaders();
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+  const response = await fetch(url, {
+    method,
+    headers,
+    ...(body !== undefined ? {body: JSON.stringify(body)} : {}),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || errorMessage);
+  }
+  return data;
 }
 
 function slugifyManifestId(value) {
@@ -252,27 +283,25 @@ function ManifestList({manifests, selectedId, onDelete}) {
                         Edit
                       </RouterLink>
                     </Link>
-                    <Link asChild size="2">
-                      <button type="button" onClick={() => setPreviewManifest(manifest)}>
-                        Preview
-                      </button>
-                    </Link>
+                    <Button variant="ghost" size="2" onClick={() => setPreviewManifest(manifest)}>
+                      Preview
+                    </Button>
                     <Link asChild size="2">
                       <a href={manifest.manifestUrl} target="_blank" rel="noreferrer">
                         IIIF
                       </a>
                     </Link>
-                    <Link asChild size="2" color="red">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setDeleteError(null);
-                          setPendingDelete(manifest);
-                        }}
-                      >
-                        Delete
-                      </button>
-                    </Link>
+                    <Button
+                      variant="ghost"
+                      size="2"
+                      color="red"
+                      onClick={() => {
+                        setDeleteError(null);
+                        setPendingDelete(manifest);
+                      }}
+                    >
+                      Delete
+                    </Button>
                   </Flex>
                 </Table.Cell>
               </Table.Row>
@@ -321,8 +350,8 @@ function ManifestList({manifests, selectedId, onDelete}) {
                 Cancel
               </Button>
             </AlertDialog.Cancel>
-            <Button type="button" color="red" onClick={handleConfirmDelete} disabled={deleting}>
-              {deleting ? "Deleting…" : "Delete"}
+            <Button type="button" color="red" onClick={handleConfirmDelete} loading={deleting}>
+              Delete
             </Button>
           </Flex>
         </AlertDialog.Content>
@@ -461,36 +490,43 @@ function ManifestDetail({
                     </Text>
                   </Box>
                   <Flex gap="2" className="canvas-list-actions">
-                    <Button
-                      type="button"
-                      variant="soft"
-                      size="1"
-                      onClick={() => onReorderCanvas(index, -1)}
-                      disabled={index === 0 || canvasSaving}
-                      aria-label="Move up"
-                    >
-                      ↑
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="soft"
-                      size="1"
-                      onClick={() => onReorderCanvas(index, 1)}
-                      disabled={index === canvases.length - 1 || canvasSaving}
-                      aria-label="Move down"
-                    >
-                      ↓
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="soft"
-                      color="red"
-                      size="1"
-                      onClick={() => onRemoveCanvas(index)}
-                      disabled={canvasSaving}
-                    >
-                      Remove
-                    </Button>
+                    <Tooltip content="Move up">
+                      <IconButton
+                        type="button"
+                        variant="soft"
+                        size="1"
+                        onClick={() => onReorderCanvas(index, -1)}
+                        disabled={index === 0 || canvasSaving}
+                        aria-label="Move up"
+                      >
+                        <ArrowUpIcon />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip content="Move down">
+                      <IconButton
+                        type="button"
+                        variant="soft"
+                        size="1"
+                        onClick={() => onReorderCanvas(index, 1)}
+                        disabled={index === canvases.length - 1 || canvasSaving}
+                        aria-label="Move down"
+                      >
+                        <ArrowDownIcon />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip content="Remove asset">
+                      <IconButton
+                        type="button"
+                        variant="soft"
+                        color="red"
+                        size="1"
+                        onClick={() => onRemoveCanvas(index)}
+                        disabled={canvasSaving}
+                        aria-label="Remove asset"
+                      >
+                        <TrashIcon />
+                      </IconButton>
+                    </Tooltip>
                   </Flex>
                 </Flex>
               </Card>
@@ -599,8 +635,8 @@ function AddWorkModal({
                     <Button type="button" variant="soft" color="gray" onClick={onClose} disabled={createSubmitting}>
                       Cancel
                     </Button>
-                    <Button type="submit" disabled={createSubmitting}>
-                      {createSubmitting ? "Creating…" : "Create"}
+                    <Button type="submit" loading={createSubmitting}>
+                      Create
                     </Button>
                   </Flex>
                 </Flex>
@@ -637,8 +673,8 @@ function AddWorkModal({
                     <Button type="button" variant="soft" color="gray" onClick={onClose} disabled={importFetching}>
                       Cancel
                     </Button>
-                    <Button type="submit" disabled={importFetching}>
-                      {importFetching ? "Fetching…" : "Fetch"}
+                    <Button type="submit" loading={importFetching}>
+                      Fetch
                     </Button>
                   </Flex>
                 </Flex>
@@ -703,8 +739,8 @@ function AddWorkModal({
                   <Button type="button" variant="soft" color="gray" onClick={onClose} disabled={importConfirming}>
                     Cancel
                   </Button>
-                  <Button type="button" onClick={onImportConfirm} disabled={importConfirming}>
-                    {importConfirming ? "Importing…" : "Import"}
+                  <Button type="button" onClick={onImportConfirm} loading={importConfirming}>
+                    Import
                   </Button>
                 </Flex>
               </Flex>
@@ -742,9 +778,9 @@ function AssetImagePicker({value, onSelect, disabled}) {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    // No setLoading(true)/setError(null) here: this runs once on mount and the
+    // state already initializes to exactly those values.
     let cancelled = false;
-    setLoading(true);
-    setError(null);
     list({path: "image/"})
       .then((result) => {
         if (cancelled) return;
@@ -859,8 +895,12 @@ function AddCanvasModal({open, onClose, onSubmit, form, onChange, submitting, er
               <Button type="button" variant="soft" color="gray" onClick={onClose} disabled={submitting}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={submitting || !form.assetKey || !resolvedUrl}>
-                {submitting ? "Adding…" : "Add"}
+              <Button
+                type="submit"
+                loading={submitting}
+                disabled={submitting || !form.assetKey || !resolvedUrl}
+              >
+                Add
               </Button>
             </Flex>
           </Flex>
@@ -901,12 +941,8 @@ function WorksListPanel({
     setSearchError(null);
     const timer = setTimeout(async () => {
       try {
-        const response = await fetch(searchApiUrl(query), {headers: await authHeaders()});
-        const data = await response.json().catch(() => ({}));
+        const data = await apiFetch(searchApiUrl(query), {errorMessage: "Search failed"});
         if (cancelled) return;
-        if (!response.ok) {
-          throw new Error(data.error || "Search failed");
-        }
         setSearchResults(Array.isArray(data.hits) ? data.hits : []);
       } catch (err) {
         if (!cancelled) setSearchError(err.message);
@@ -926,14 +962,10 @@ function WorksListPanel({
     setReindexError(null);
     setReindexResult(null);
     try {
-      const response = await fetch(`${SEARCH_API_BASE}/reindex`, {
+      const data = await apiFetch(`${SEARCH_API_BASE}/reindex`, {
         method: "POST",
-        headers: await authHeaders(),
+        errorMessage: "Unable to publish search index",
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || "Unable to publish search index");
-      }
       setReindexResult(data);
     } catch (err) {
       setReindexError(err.message);
@@ -961,8 +993,9 @@ function WorksListPanel({
             variant="soft"
             onClick={handleReindex}
             disabled={!searchApiAvailable || reindexing}
+            loading={reindexing}
           >
-            {reindexing ? "Publishing…" : "Publish search index"}
+            Publish search index
           </Button>
           <Button
             type="button"
@@ -1036,6 +1069,22 @@ function WorkDetailPanel({
   const isFailed = importStatus?.status === "failed";
   const isStale = importStatus?.status === "in-progress" && importStale;
   const importInProgress = importStatus?.status === "in-progress" && !isStale;
+  const [resumeError, setResumeError] = useState(null);
+
+  // Clover mutates the manifest object it's given, and this one is the same
+  // object the canvas reorder/remove handlers read from and write back to S3.
+  const manifestObject = manifestDetail?.manifest ?? null;
+  const viewerContent = useMemo(
+    () => (manifestObject ? structuredClone(manifestObject) : null),
+    [manifestObject],
+  );
+
+  const handleResumeClick = () => {
+    setResumeError(null);
+    Promise.resolve(onResumeImport(manifestDetail.identifier)).catch((err) =>
+      setResumeError(err.message),
+    );
+  };
 
   return (
     <Flex direction="column" gap="5">
@@ -1058,11 +1107,10 @@ function WorkDetailPanel({
               ? `Image import failed${importStatus.error ? `: ${importStatus.error}` : ""}.`
               : "Image import hasn't made progress in a while — it may have stalled."}
             {" "}
-            <Link asChild>
-              <button type="button" onClick={() => onResumeImport(manifestDetail.identifier)}>
-                Resume
-              </button>
-            </Link>
+            <Button variant="ghost" size="1" onClick={handleResumeClick}>
+              Resume
+            </Button>
+            {resumeError ? ` — ${resumeError}` : ""}
           </Callout.Text>
         </Callout.Root>
       )}
@@ -1087,7 +1135,7 @@ function WorkDetailPanel({
             >
               <CloverViewer
                 key={manifestDetail.identifier}
-                iiifContent={manifestDetail.manifest}
+                iiifContent={viewerContent}
                 customTheme={CLOVER_THEME}
                 options={CLOVER_OPTIONS}
               />
@@ -1194,11 +1242,7 @@ export default function App({ signOut }) {
       if (!endpoint) {
         throw new Error("Work API unavailable");
       }
-      const response = await fetch(endpoint, { headers: await authHeaders() });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || "Unable to load works");
-      }
+      const data = await apiFetch(endpoint, {errorMessage: "Unable to load works"});
       setManifests(Array.isArray(data.manifests) ? data.manifests : []);
     } catch (err) {
       setManifests([]);
@@ -1214,14 +1258,7 @@ export default function App({ signOut }) {
       if (!endpoint) {
         throw new Error("Work API unavailable");
       }
-      const response = await fetch(endpoint, {
-        method: "DELETE",
-        headers: await authHeaders(),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || "Unable to delete work");
-      }
+      await apiFetch(endpoint, {method: "DELETE", errorMessage: "Unable to delete work"});
       await refreshManifests();
     },
     [manifestApiUrl, refreshManifests],
@@ -1233,14 +1270,7 @@ export default function App({ signOut }) {
       if (!endpoint) {
         throw new Error("Work API unavailable");
       }
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: await authHeaders(),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || "Unable to resume import");
-      }
+      const data = await apiFetch(endpoint, {method: "POST", errorMessage: "Unable to resume import"});
       setImportStatus(data);
       setImportPollGeneration((g) => g + 1); // restart polling if it had stopped (e.g. after a failure)
     },
@@ -1259,11 +1289,7 @@ export default function App({ signOut }) {
       if (!endpoint) {
         throw new Error("Work API unavailable");
       }
-      const response = await fetch(endpoint, { headers: await authHeaders() });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || "Unable to load work");
-      }
+      const data = await apiFetch(endpoint, {errorMessage: "Unable to load work"});
       setManifestDetail(data.manifest);
       setManifests((prev) =>
         prev.map((manifest) =>
@@ -1329,15 +1355,11 @@ export default function App({ signOut }) {
       if (!endpoint) {
         throw new Error("Work API unavailable");
       }
-      const response = await fetch(endpoint, {
+      const data = await apiFetch(endpoint, {
         method: "POST",
-        headers: {"Content-Type": "application/json", ...(await authHeaders())},
-        body: JSON.stringify({label}),
+        body: {label},
+        errorMessage: "Unable to create work",
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || "Unable to create work");
-      }
       await refreshManifests();
       selectWork(data.manifest?.identifier);
       setManifestModalOpen(false);
@@ -1362,15 +1384,11 @@ export default function App({ signOut }) {
       if (!endpoint) {
         throw new Error("Work API unavailable");
       }
-      const response = await fetch(endpoint, {
+      const data = await apiFetch(endpoint, {
         method: "POST",
-        headers: {"Content-Type": "application/json", ...(await authHeaders())},
-        body: JSON.stringify({sourceUrl}),
+        body: {sourceUrl},
+        errorMessage: "Unable to fetch that manifest",
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || "Unable to fetch that manifest");
-      }
       setImportPreview(data);
       setManifestModalStep("import-preview");
     } catch (err) {
@@ -1389,15 +1407,11 @@ export default function App({ signOut }) {
       if (!endpoint) {
         throw new Error("Work API unavailable");
       }
-      const response = await fetch(endpoint, {
+      const data = await apiFetch(endpoint, {
         method: "POST",
-        headers: {"Content-Type": "application/json", ...(await authHeaders())},
-        body: JSON.stringify({sourceUrl: importPreview.sourceUrl, manifest: importPreview.manifest}),
+        body: {sourceUrl: importPreview.sourceUrl, manifest: importPreview.manifest},
+        errorMessage: "Unable to import that manifest",
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || "Unable to import that manifest");
-      }
       await refreshManifests();
       selectWork(data.manifest?.identifier);
       setManifestModalOpen(false);
@@ -1432,15 +1446,11 @@ export default function App({ signOut }) {
         if (!endpoint) {
           throw new Error("Work API unavailable");
         }
-        const response = await fetch(endpoint, {
+        const data = await apiFetch(endpoint, {
           method: "PUT",
-          headers: {"Content-Type": "application/json", ...(await authHeaders())},
-          body: JSON.stringify({items}),
+          body: {items},
+          errorMessage: "Unable to save assets",
         });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(data.error || "Unable to save assets");
-        }
         setManifestDetail(data.manifest);
         setManifests((prev) =>
           prev.map((manifest) =>
@@ -1502,7 +1512,7 @@ export default function App({ signOut }) {
       [items[index], items[targetIndex]] = [items[targetIndex], items[index]];
       try {
         await persistManifestItems(items);
-      } catch (err) {
+      } catch {
         // Error handled via canvasActionError state.
       }
     },
@@ -1515,7 +1525,7 @@ export default function App({ signOut }) {
       const items = manifestDetail.manifest.items.filter((_, idx) => idx !== index);
       try {
         await persistManifestItems(items);
-      } catch (err) {
+      } catch {
         // Error handled via canvasActionError state.
       }
     },
@@ -1555,8 +1565,9 @@ export default function App({ signOut }) {
       const endpoint = manifestApiUrl(`${encodeURIComponent(selectedManifestId)}/import-status`);
       if (!endpoint) return;
       try {
-        const response = await fetch(endpoint, {headers: await authHeaders()});
-        const data = await response.json().catch(() => null);
+        // apiFetch throws on a non-2xx rather than letting an error body through
+        // as if it were a status record; the catch below treats that as transient.
+        const data = await apiFetch(endpoint, {errorMessage: "Unable to read import status"});
         if (cancelled || !data) return;
         if (previousStatus === "in-progress" && data.status === "complete") {
           fetchManifestDetail(selectedManifestId);
