@@ -2,9 +2,9 @@ import {useCallback, useEffect, useMemo, useState} from "react";
 import {Link as RouterLink, useNavigate, useParams} from "react-router-dom";
 import {Amplify} from "aws-amplify";
 import {fetchAuthSession} from "aws-amplify/auth";
-import {list} from "aws-amplify/storage";
 import {StorageBrowser} from "./storageBrowser";
 import AssetThumbnails from "./components/AssetThumbnails";
+import AssetDropzone from "./components/AssetDropzone";
 import CloverViewer from "@samvera/clover-iiif/viewer";
 import {CLOVER_OPTIONS, CLOVER_THEME} from "./cloverTheme";
 import {
@@ -40,7 +40,6 @@ import "./App.css";
 
 const MANIFEST_API_BASE = (import.meta.env.VITE_MANIFEST_API_URL || "").replace(/\/$/, "");
 const SEARCH_API_BASE = (import.meta.env.VITE_SEARCH_API_URL || "").replace(/\/$/, "");
-const IIIF_BASE_URL = (import.meta.env.VITE_IIIF_BASE_URL || "").replace(/\/$/, "");
 const STORAGE_BUCKET = import.meta.env.VITE_STORAGE_BUCKET || "";
 const SOURCE_BUCKET = import.meta.env.VITE_SOURCE_BUCKET || "";
 const STORAGE_REGION = import.meta.env.VITE_STORAGE_REGION || import.meta.env.VITE_AWS_REGION || "";
@@ -98,14 +97,6 @@ async function apiFetch(url, {method = "GET", body, errorMessage = "Request fail
   return data;
 }
 
-function slugifyManifestId(value) {
-  return (value || "")
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
 function searchApiUrl(query) {
   if (!SEARCH_API_BASE) return null;
   return `${SEARCH_API_BASE}?q=${encodeURIComponent(query)}`;
@@ -117,79 +108,6 @@ function searchApiUrl(query) {
 function identifierFromManifestId(manifestUrl) {
   const match = /presentation\/manifest\/([^/]+)\/manifest\.json$/.exec(manifestUrl || "");
   return match ? match[1] : null;
-}
-
-function buildInfoUrlFromKey(key) {
-  if (!IIIF_BASE_URL || !key) return "";
-  const identifier = key.replace(/\.[^./]+$/, "");
-  return `${IIIF_BASE_URL}/${encodeURIComponent(identifier)}/info.json`;
-}
-
-function assetLabelFromKey(key) {
-  const basename = (key || "").split("/").filter(Boolean).pop() || "";
-  return basename.replace(/\.[^./]+$/, "");
-}
-
-function buildCanvasResource(manifest, imageInfo, label) {
-  if (!manifest?.id) {
-    throw new Error("Work is missing an id");
-  }
-  // serverless-iiif currently serves IIIF Image API 2.1 (`@context`/`@id`), not 3.x (`id`) — support both.
-  const imageId = imageInfo?.id || imageInfo?.["@id"];
-  if (!imageId) {
-    throw new Error("Image info is missing an id");
-  }
-  const isImageApi2 =
-    /\/image\/2\//.test(imageInfo?.["@context"] || "") || (!imageInfo?.id && Boolean(imageInfo?.["@id"]));
-  const manifestBase = manifest.id.replace(/\/manifest\.json$/i, "");
-  const normalizedLabel = label?.trim() || "Asset";
-  const slugBase = slugifyManifestId(normalizedLabel) || slugifyManifestId(imageId.split("/").pop() || "");
-  const uniqueSlug = slugBase ? `${slugBase}-${Date.now().toString(36)}` : Date.now().toString(36);
-  const canvasId = `${manifestBase}/canvas/${uniqueSlug}`;
-  const pageId = `${canvasId}/page/1`;
-  const annotationId = `${canvasId}/annotation/1`;
-  const serviceId = imageId.replace(/\/$/, "");
-  const imageService = {
-    id: serviceId,
-    type: imageInfo.type || (isImageApi2 ? "ImageService2" : "ImageService3"),
-    profile: Array.isArray(imageInfo.profile)
-      ? imageInfo.profile[0]
-      : imageInfo.profile || "level0",
-    width: imageInfo.width,
-    height: imageInfo.height,
-  };
-  const canvas = {
-    id: canvasId,
-    type: "Canvas",
-    width: imageInfo.width,
-    height: imageInfo.height,
-    items: [
-      {
-        id: pageId,
-        type: "AnnotationPage",
-        items: [
-          {
-            id: annotationId,
-            type: "Annotation",
-            motivation: "painting",
-            target: canvasId,
-            body: {
-              id: `${serviceId}/full/${isImageApi2 ? "full" : "max"}/0/default.jpg`,
-              type: "Image",
-              format: "image/jpeg",
-              width: imageInfo.width,
-              height: imageInfo.height,
-              service: [imageService],
-            },
-          },
-        ],
-      },
-    ],
-  };
-  if (normalizedLabel) {
-    canvas.label = {none: [normalizedLabel]};
-  }
-  return canvas;
 }
 
 function StorageBrowserPanel({ready}) {
@@ -412,7 +330,7 @@ function ManifestDetail({
   detail,
   loading,
   error,
-  onAddCanvas,
+  onAttachAssets,
   canAddCanvas,
   onReorderCanvas,
   onRemoveCanvas,
@@ -442,23 +360,17 @@ function ManifestDetail({
 
   return (
     <Box className="manifest-detail">
-      <Flex justify="between" align="start" gap="3" className="manifest-detail-header">
-        <Box className="manifest-detail-meta">
-          <Heading as="h3" size="3" mb="1">{detail.label || detail.identifier}</Heading>
-          <Text as="p" size="1" className="manifest-detail-meta-url">{detail.manifestUrl}</Text>
-        </Box>
-        <Button
-          type="button"
-          onClick={onAddCanvas}
-          disabled={!canAddCanvas}
-          title={!canAddCanvas && disableAddReason ? disableAddReason : undefined}
-        >
-          Add Asset
-        </Button>
+      <Flex direction="column" gap="1" className="manifest-detail-header">
+        <Heading as="h3" size="3" mb="1">{detail.label || detail.identifier}</Heading>
+        <Text as="p" size="1" className="manifest-detail-meta-url">{detail.manifestUrl}</Text>
       </Flex>
-      {disableAddReason && !canAddCanvas && (
-        <Text as="p" size="1" color="gray" className="manifest-detail-hint">{disableAddReason}</Text>
-      )}
+      <AssetDropzone
+        workId={detail.identifier}
+        manifest={detail.manifest}
+        disabled={!canAddCanvas}
+        disabledReason={disableAddReason}
+        onAttach={onAttachAssets}
+      />
       {canvasActionError && (
         <Callout.Root color="red" size="1">
           <Callout.Text>{canvasActionError}</Callout.Text>
@@ -772,144 +684,6 @@ function AddWorkModal({
   );
 }
 
-function AssetImagePicker({value, onSelect, disabled}) {
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    // No setLoading(true)/setError(null) here: this runs once on mount and the
-    // state already initializes to exactly those values.
-    let cancelled = false;
-    list({path: "image/"})
-      .then((result) => {
-        if (cancelled) return;
-        const files = (result.items || []).filter(
-          (item) => item.path && !item.path.endsWith("/"),
-        );
-        setItems(files);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err.message || "Unable to list images");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (loading) {
-    return <Text as="p" size="2" color="gray">Loading images…</Text>;
-  }
-
-  if (error) {
-    return (
-      <Callout.Root color="red" size="1">
-        <Callout.Text>{error}</Callout.Text>
-      </Callout.Root>
-    );
-  }
-
-  if (items.length === 0) {
-    return <Text as="p" size="2" color="gray">No images found in `image/`.</Text>;
-  }
-
-  return (
-    <Flex direction="column" gap="1" className="asset-picker-list">
-      {items.map((item) => {
-        const isActive = item.path === value;
-        return (
-          <Card
-            key={item.path}
-            asChild
-            variant={isActive ? "classic" : "surface"}
-            className={`asset-picker-item ${isActive ? "asset-picker-item--active" : ""}`}
-          >
-            <button
-              type="button"
-              onClick={() => onSelect(item.path)}
-              disabled={disabled}
-            >
-              <Text size="2">{item.path.replace(/^image\//, "")}</Text>
-            </button>
-          </Card>
-        );
-      })}
-    </Flex>
-  );
-}
-
-function AddCanvasModal({open, onClose, onSubmit, form, onChange, submitting, error}) {
-  const handleChange = (evt) => {
-    const {name, value} = evt.target;
-    onChange(name, value);
-  };
-  const resolvedUrl = buildInfoUrlFromKey(form.assetKey);
-
-  return (
-    <Dialog.Root open={open} onOpenChange={(next) => !next && onClose()}>
-      <Dialog.Content maxWidth="420px">
-        <Dialog.Title>Add Asset</Dialog.Title>
-        <form onSubmit={onSubmit}>
-          <Flex direction="column" gap="3">
-            {!IIIF_BASE_URL && (
-              <Callout.Root color="red" size="1">
-                <Callout.Text>
-                  VITE_IIIF_BASE_URL is not configured; asset URLs cannot be resolved.
-                </Callout.Text>
-              </Callout.Root>
-            )}
-            <label>
-              <Text as="div" size="2" weight="medium" mb="1">Select an image asset</Text>
-              <AssetImagePicker
-                value={form.assetKey}
-                onSelect={(key) => onChange("assetKey", key)}
-                disabled={submitting}
-              />
-            </label>
-            {form.assetKey && (
-              <Text as="p" size="1" color="gray" className="asset-picker-resolved-url">
-                {resolvedUrl || "Unable to resolve a URL for this asset."}
-              </Text>
-            )}
-            <label>
-              <Text as="div" size="2" weight="medium" mb="1">Asset label</Text>
-              <TextField.Root
-                name="label"
-                type="text"
-                value={form.label}
-                onChange={handleChange}
-                placeholder="e.g. Page 1"
-                disabled={submitting}
-              />
-            </label>
-            {error && (
-              <Callout.Root color="red" size="1">
-                <Callout.Text>{error}</Callout.Text>
-              </Callout.Root>
-            )}
-            <Flex justify="end" gap="3" mt="2">
-              <Button type="button" variant="soft" color="gray" onClick={onClose} disabled={submitting}>
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                loading={submitting}
-                disabled={submitting || !form.assetKey || !resolvedUrl}
-              >
-                Add
-              </Button>
-            </Flex>
-          </Flex>
-        </form>
-      </Dialog.Content>
-    </Dialog.Root>
-  );
-}
-
 function WorksListPanel({
   manifestApiAvailable,
   manifestError,
@@ -1057,7 +831,7 @@ function WorkDetailPanel({
   manifestDetailError,
   importStatus,
   onResumeImport,
-  onAddCanvas,
+  onAttachAssets,
   canAddCanvas,
   importStale,
   onReorderCanvas,
@@ -1158,7 +932,7 @@ function WorkDetailPanel({
             detail={manifestDetail}
             loading={manifestDetailLoading}
             error={manifestDetailError}
-            onAddCanvas={onAddCanvas}
+            onAttachAssets={onAttachAssets}
             canAddCanvas={canAddCanvas}
             onReorderCanvas={onReorderCanvas}
             onRemoveCanvas={onRemoveCanvas}
@@ -1212,10 +986,6 @@ export default function App({ signOut }) {
   const [importError, setImportError] = useState(null);
   const [importFetching, setImportFetching] = useState(false);
   const [importConfirming, setImportConfirming] = useState(false);
-  const [isCanvasModalOpen, setCanvasModalOpen] = useState(false);
-  const [canvasForm, setCanvasForm] = useState({assetKey: "", label: ""});
-  const [canvasModalError, setCanvasModalError] = useState(null);
-  const [canvasModalSubmitting, setCanvasModalSubmitting] = useState(false);
   const [canvasSaving, setCanvasSaving] = useState(false);
   const [canvasActionError, setCanvasActionError] = useState(null);
 
@@ -1308,10 +1078,6 @@ export default function App({ signOut }) {
 
   const handleManifestFieldChange = useCallback((name, value) => {
     setManifestForm((prev) => ({...prev, [name]: value}));
-  }, []);
-
-  const handleCanvasFieldChange = useCallback((name, value) => {
-    setCanvasForm((prev) => ({...prev, [name]: value}));
   }, []);
 
   const handleOpenManifestModal = () => {
@@ -1422,18 +1188,6 @@ export default function App({ signOut }) {
     }
   };
 
-  const handleOpenCanvasModal = () => {
-    if (!manifestDetail) return;
-    setCanvasForm((prev) => ({assetKey: prev.assetKey || "", label: prev.label || ""}));
-    setCanvasModalError(null);
-    setCanvasModalOpen(true);
-  };
-
-  const handleCloseCanvasModal = () => {
-    setCanvasModalOpen(false);
-    setCanvasModalError(null);
-  };
-
   const persistManifestItems = useCallback(
     async (items) => {
       if (!selectedManifestId) {
@@ -1470,38 +1224,16 @@ export default function App({ signOut }) {
     [manifestApiUrl, selectedManifestId],
   );
 
-  const handleCanvasSubmit = async (event) => {
-    event.preventDefault();
-    if (!manifestDetail?.manifest) {
-      setCanvasModalError("Select a work first");
-      return;
-    }
-    setCanvasModalSubmitting(true);
-    setCanvasModalError(null);
-    try {
-      const infoUrl = buildInfoUrlFromKey(canvasForm.assetKey);
-      if (!infoUrl) {
-        setCanvasModalError("Select an image asset");
-        setCanvasModalSubmitting(false);
-        return;
+  const handleAttachAssets = useCallback(
+    async (newCanvases) => {
+      if (!manifestDetail?.manifest) {
+        throw new Error("Select a work first");
       }
-      const response = await fetch(infoUrl);
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || "Unable to load image info");
-      }
-      const label = canvasForm.label.trim() || assetLabelFromKey(canvasForm.assetKey) || "Untitled asset";
-      const nextCanvas = buildCanvasResource(manifestDetail.manifest, data, label);
-      const nextItems = [...(manifestDetail.manifest.items || []), nextCanvas];
+      const nextItems = [...(manifestDetail.manifest.items || []), ...newCanvases];
       await persistManifestItems(nextItems);
-      setCanvasModalOpen(false);
-      setCanvasForm({assetKey: "", label: ""});
-    } catch (err) {
-      setCanvasModalError(err.message);
-    } finally {
-      setCanvasModalSubmitting(false);
-    }
-  };
+    },
+    [manifestDetail, persistManifestItems],
+  );
 
   const handleReorderCanvas = useCallback(
     async (index, delta) => {
@@ -1638,7 +1370,7 @@ export default function App({ signOut }) {
                 importStatus={importStatus}
                 importStale={importStale}
                 onResumeImport={handleResumeImport}
-                onAddCanvas={handleOpenCanvasModal}
+                onAttachAssets={handleAttachAssets}
                 canAddCanvas={canAddCanvas}
                 onReorderCanvas={handleReorderCanvas}
                 onRemoveCanvas={handleRemoveCanvas}
@@ -1684,15 +1416,6 @@ export default function App({ signOut }) {
         importPreview={importPreview}
         onImportConfirm={handleImportConfirm}
         importConfirming={importConfirming}
-      />
-      <AddCanvasModal
-        open={isCanvasModalOpen}
-        onClose={handleCloseCanvasModal}
-        onSubmit={handleCanvasSubmit}
-        form={canvasForm}
-        onChange={handleCanvasFieldChange}
-        submitting={canvasModalSubmitting}
-        error={canvasModalError}
       />
     </main>
   );

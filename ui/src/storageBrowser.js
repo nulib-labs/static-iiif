@@ -15,7 +15,7 @@ const LOCATIONS = [
     id: "source-images",
     bucket: SOURCE_BUCKET,
     prefix: "image/",
-    permissions: ["list", "get", "write"],
+    permissions: ["list", "get"],
     type: "PREFIX",
   },
   // TODO: manifest browsing/editing
