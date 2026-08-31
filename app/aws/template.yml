@@ -43,6 +43,7 @@ Globals:
         SOURCE_BUCKET: !Sub "${AWS::StackName}-source"
         IIIF_BUCKET: !Sub "${AWS::StackName}-iiif"
         IIIF_BASE_URL: !Sub "https://${AWS::StackName}-iiif.s3.${AWS::Region}.amazonaws.com"
+        IMAGE_API_BASE_URL: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
 
 Conditions:
   SearchIndexNameProvided: !Not [!Equals [!Ref SearchIndexName, ""]]
@@ -216,6 +217,7 @@ Resources:
           - GET
           - POST
           - PUT
+          - DELETE
           - OPTIONS
         AllowHeaders:
           - "Content-Type"
@@ -237,6 +239,13 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-manifest-api"
       CodeUri: ../
       Handler: index.handler
+      Timeout: 900
+      EventInvokeConfig:
+        MaximumRetryAttempts: 2
+        DestinationConfig:
+          OnFailure:
+            Type: EventBridge
+            Destination: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
       Policies:
         - Statement:
             - Effect: Allow
@@ -250,6 +259,25 @@ Resources:
                 - s3:DeleteObject
                 - s3:HeadObject
               Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/*"
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-source"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:HeadObject
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-source/*"
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-manifest-api"
+            - Effect: Allow
+              Action:
+                - events:PutEvents
+              Resource: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
       Events:
         GetManifests:
           Type: HttpApi
@@ -263,12 +291,52 @@ Resources:
             ApiId: !Ref ManifestHttpApi
             Path: /manifests
             Method: POST
+        ImportManifestPreview:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/import/preview
+            Method: POST
+        ImportManifest:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/import
+            Method: POST
         GetManifestById:
           Type: HttpApi
           Properties:
             ApiId: !Ref ManifestHttpApi
             Path: /manifests/{id}
             Method: GET
+        DeleteManifest:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/{id}
+            Method: DELETE
+        GetImportStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/{id}/import-status
+            Method: GET
+        ImportResume:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/{id}/import-resume
+            Method: POST
+        ImportFailureEvent:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source: ["lambda"]
+              detail-type: ["Lambda Function Invocation Result - Failure"]
+              detail:
+                requestContext:
+                  functionArn:
+                    - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-manifest-api"
         UpdateManifestItems:
           Type: HttpApi
           Properties:
