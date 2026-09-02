@@ -2,7 +2,6 @@ import {useCallback, useEffect, useMemo, useState} from "react";
 import {Link as RouterLink, useNavigate, useParams} from "react-router-dom";
 import {Amplify} from "aws-amplify";
 import {fetchAuthSession} from "aws-amplify/auth";
-import {StorageBrowser} from "./storageBrowser";
 import AssetThumbnails from "./components/AssetThumbnails";
 import AssetDropzone from "./components/AssetDropzone";
 import {buildThumbnailUrlFromInfo} from "./lib/canvasAssets";
@@ -25,6 +24,7 @@ import {
 } from "@dnd-kit/sortable";
 import {CSS} from "@dnd-kit/utilities";
 import {
+  ArrowUpIcon,
   DragHandleDots2Icon,
   PlusIcon,
   CheckIcon,
@@ -52,8 +52,6 @@ import {
   Progress,
   Tabs,
 } from "@radix-ui/themes";
-import "@aws-amplify/ui-react/styles.css";
-import "@aws-amplify/ui-react-storage/styles.css";
 import "@radix-ui/themes/styles.css";
 import "./App.css";
 
@@ -127,26 +125,6 @@ function searchApiUrl(query) {
 function identifierFromManifestId(manifestUrl) {
   const match = /presentation\/manifest\/([^/]+)\/manifest\.json$/.exec(manifestUrl || "");
   return match ? match[1] : null;
-}
-
-function StorageBrowserPanel({ready}) {
-  return (
-    <Card size="3" className="panel storage-panel">
-      <Heading as="h2" size="4" mb="3">S3 Storage Browser</Heading>
-      <Box className="panel-body storage-panel-body">
-        {ready ? (
-          <Box className="storage-browser-wrapper">
-            <StorageBrowser />
-          </Box>
-        ) : (
-          <Text as="p" size="2" color="gray">
-            Provide `VITE_STORAGE_BUCKET`, `VITE_SOURCE_BUCKET`, and
-            `VITE_STORAGE_REGION` to enable the Amplify Storage Browser.
-          </Text>
-        )}
-      </Box>
-    </Card>
-  );
 }
 
 function ManifestList({manifests, selectedId, onDelete}) {
@@ -1257,26 +1235,25 @@ function WorkDetailPanel({
   return (
     <Flex direction="column" gap="5">
       {manifestDetail && (
-        <Flex direction="column" gap="1">
+        <Flex direction="column" align="center" gap="7">
+          <Button asChild variant="soft" size="2">
+            <RouterLink to="/works">
+              <ArrowUpIcon /> View all Works
+            </RouterLink>
+          </Button>
           {/* The work title is edited here rather than in the Metadata tab —
-              it is the page's own heading. */}
+              it is the page's own heading. Its size lives in CSS because the
+              requested 2x of the old size-6 falls between Radix's steps. */}
           <InlineTextEditor
             as="h1"
             value={manifestDetail.label || ""}
             onSave={onSaveTitle}
             placeholder={manifestDetail.identifier}
             ariaLabel="Save title"
-            textProps={{weight: "bold", size: "6"}}
+            textProps={{weight: "bold"}}
             fieldSize="3"
             className="work-title-editable"
           />
-          <Flex align="center" gap="2" style={{fontFamily: "var(--code-font-family)", fontSize: "var(--font-size-2)"}}>
-            <Link asChild underline="always">
-              <RouterLink to="/works">works</RouterLink>
-            </Link>
-            <Text style={{color: "var(--gray-8)"}}>/</Text>
-            <Text color="gray">{manifestDetail.identifier}</Text>
-          </Flex>
         </Flex>
       )}
       {(isFailed || isStale) && (
@@ -1333,9 +1310,7 @@ function WorkDetailPanel({
       </Card>
       <Card size="3" className="panel manifest-panel">
         <Box className="panel-body manifest-panel-body">
-          {/* Nested, uncontrolled tabs — this is in-page state, unlike the
-              URL-driven Works/Assets tabs at the top. `.tabs-large` is
-              deliberately omitted so these read as subordinate to those. */}
+          {/* Uncontrolled: this is in-page state, not reflected in the URL. */}
           <Tabs.Root defaultValue="assets">
             <Tabs.List size="2">
               <Tabs.Trigger value="assets">Assets</Tabs.Trigger>
@@ -1380,10 +1355,9 @@ function WorkDetailPanel({
 }
 
 export default function App({ signOut }) {
-  const {tab, workId} = useParams();
+  const {workId} = useParams();
   const navigate = useNavigate();
-  const activeTab = tab === "assets" ? "assets" : "works";
-  const selectedManifestId = activeTab === "works" && workId ? decodeURIComponent(workId) : null;
+  const selectedManifestId = workId ? decodeURIComponent(workId) : null;
 
   const selectWork = useCallback(
     (identifier) => {
@@ -1392,14 +1366,7 @@ export default function App({ signOut }) {
     [navigate],
   );
 
-  useEffect(() => {
-    if (tab !== "works" && tab !== "assets") {
-      navigate("/works", {replace: true});
-    }
-  }, [tab, navigate]);
-
   const manifestApiAvailable = Boolean(MANIFEST_API_BASE);
-  const storageBrowserReady = Boolean(STORAGE_BUCKET && SOURCE_BUCKET && STORAGE_REGION);
   const [manifests, setManifests] = useState([]);
   const [manifestLoading, setManifestLoading] = useState(manifestApiAvailable);
   const [manifestError, setManifestError] = useState(null);
@@ -1846,89 +1813,73 @@ export default function App({ signOut }) {
 
   return (
     <main className="layout">
-      <Flex direction="column" gap="2" className="layout-header">
-        <Flex justify="between" align="start" gap="3">
-          <Box>
-            <Heading as="h1" size="7">Static IIIF Dashboard</Heading>
-            <Text as="p" color="gray">
-              Manage works and browse image assets.
-            </Text>
-          </Box>
-          {signOut && (
-            <Button type="button" variant="soft" color="gray" onClick={signOut}>
-              Sign out
-            </Button>
-          )}
-        </Flex>
-      </Flex>
-      <Tabs.Root value={activeTab} onValueChange={(value) => value !== activeTab && navigate(`/${value}`)}>
-        <Tabs.List size="2" className="tabs-large">
-          <Tabs.Trigger value="works">Works</Tabs.Trigger>
-          <Tabs.Trigger value="assets">Assets</Tabs.Trigger>
-        </Tabs.List>
-        <Box pt="5">
-          <Tabs.Content value="works">
-            {selectedManifestId ? (
-              <WorkDetailPanel
-                manifestDetail={manifestDetail}
-                manifestDetailLoading={manifestDetailLoading}
-                manifestDetailError={manifestDetailError}
-                viewerRevision={viewerRevision}
-                importStatus={importStatus}
-                importStale={importStale}
-                onResumeImport={handleResumeImport}
-                onAttachAssets={handleAttachAssets}
-                canAddCanvas={canAddCanvas}
-                onMoveCanvas={handleMoveCanvas}
-                onRemoveCanvas={handleRemoveCanvas}
-                onRenameCanvas={handleRenameCanvas}
-                onSaveTitle={handleSaveTitle}
-                onSaveSummary={handleSaveSummary}
-                onSaveMetadata={handleSaveMetadata}
-                onSaveBehavior={handleSaveBehavior}
-                canvasSaving={canvasSaving}
-                canvasActionError={canvasActionError}
-                disableAddReason={disableAddReason}
-              />
-            ) : (
-              <WorksListPanel
-                manifestApiAvailable={manifestApiAvailable}
-                manifestError={manifestError}
-                manifestLoading={manifestLoading}
-                manifests={manifests}
-                selectedManifestId={selectedManifestId}
-                onOpenManifestModal={handleOpenManifestModal}
-                onDeleteManifest={handleDeleteManifest}
-              />
+      <div className="layout-container">
+        <Flex direction="column" gap="2" className="layout-header">
+          <Flex justify="between" align="start" gap="3">
+            <Heading as="h1" size="5">Static IIIF</Heading>
+            {signOut && (
+              <Button type="button" variant="soft" color="gray" onClick={signOut}>
+                Sign out
+              </Button>
             )}
-          </Tabs.Content>
-          <Tabs.Content value="assets">
-            <div className="columns">
-              <StorageBrowserPanel ready={storageBrowserReady} />
-            </div>
-          </Tabs.Content>
+          </Flex>
+        </Flex>
+        <Box pt="2">
+          {selectedManifestId ? (
+            <WorkDetailPanel
+              manifestDetail={manifestDetail}
+              manifestDetailLoading={manifestDetailLoading}
+              manifestDetailError={manifestDetailError}
+              viewerRevision={viewerRevision}
+              importStatus={importStatus}
+              importStale={importStale}
+              onResumeImport={handleResumeImport}
+              onAttachAssets={handleAttachAssets}
+              canAddCanvas={canAddCanvas}
+              onMoveCanvas={handleMoveCanvas}
+              onRemoveCanvas={handleRemoveCanvas}
+              onRenameCanvas={handleRenameCanvas}
+              onSaveTitle={handleSaveTitle}
+              onSaveSummary={handleSaveSummary}
+              onSaveMetadata={handleSaveMetadata}
+              onSaveBehavior={handleSaveBehavior}
+              canvasSaving={canvasSaving}
+              canvasActionError={canvasActionError}
+              disableAddReason={disableAddReason}
+            />
+          ) : (
+            <WorksListPanel
+              manifestApiAvailable={manifestApiAvailable}
+              manifestError={manifestError}
+              manifestLoading={manifestLoading}
+              manifests={manifests}
+              selectedManifestId={selectedManifestId}
+              onOpenManifestModal={handleOpenManifestModal}
+              onDeleteManifest={handleDeleteManifest}
+            />
+          )}
         </Box>
-      </Tabs.Root>
-      <AddWorkModal
-        open={isManifestModalOpen}
-        onClose={handleCloseManifestModal}
-        step={manifestModalStep}
-        onSelectStep={setManifestModalStep}
-        onBack={handleModalBack}
-        createForm={manifestForm}
-        onCreateChange={handleManifestFieldChange}
-        onCreateSubmit={handleManifestSubmit}
-        createSubmitting={manifestFormSubmitting}
-        createError={manifestFormError}
-        importUrl={importUrl}
-        onImportUrlChange={setImportUrl}
-        onImportFetch={handleImportFetch}
-        importFetching={importFetching}
-        importError={importError}
-        importPreview={importPreview}
-        onImportConfirm={handleImportConfirm}
-        importConfirming={importConfirming}
-      />
+        <AddWorkModal
+          open={isManifestModalOpen}
+          onClose={handleCloseManifestModal}
+          step={manifestModalStep}
+          onSelectStep={setManifestModalStep}
+          onBack={handleModalBack}
+          createForm={manifestForm}
+          onCreateChange={handleManifestFieldChange}
+          onCreateSubmit={handleManifestSubmit}
+          createSubmitting={manifestFormSubmitting}
+          createError={manifestFormError}
+          importUrl={importUrl}
+          onImportUrlChange={setImportUrl}
+          onImportFetch={handleImportFetch}
+          importFetching={importFetching}
+          importError={importError}
+          importPreview={importPreview}
+          onImportConfirm={handleImportConfirm}
+          importConfirming={importConfirming}
+        />
+      </div>
     </main>
   );
 }

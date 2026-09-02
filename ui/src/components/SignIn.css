@@ -1,0 +1,21 @@
+.signin-screen {
+  min-height: 100vh;
+  padding: var(--space-5);
+  background-color: var(--gray-2);
+}
+
+.signin-card {
+  width: 100%;
+  max-width: 24rem;
+  padding: var(--space-6);
+  border: 1px solid var(--gray-5);
+  border-radius: var(--radius-4);
+  background-color: var(--color-panel-solid);
+  box-shadow: var(--shadow-3);
+}
+
+/* Radix Text renders an inline label; make it own a line above its field. */
+.signin-label {
+  display: block;
+  margin-bottom: var(--space-1);
+}
