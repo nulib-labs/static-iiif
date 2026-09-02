@@ -50,7 +50,7 @@ import {
   Callout,
   Badge,
   Progress,
-  Tabs,
+  SegmentedControl,
 } from "@radix-ui/themes";
 import "@radix-ui/themes/styles.css";
 import "./App.css";
@@ -531,10 +531,9 @@ function toLanguageMap(values) {
   return {none: values};
 }
 
-function ManifestMetadataPanel({manifest, onSaveSummary, onSaveMetadata, onSaveBehavior}) {
+function ManifestMetadataPanel({manifest, onSaveSummary, onSaveMetadata}) {
   const entries = Array.isArray(manifest?.metadata) ? manifest.metadata : [];
   const summary = readLanguageMap(manifest?.summary)[0] || "";
-  const behavior = Array.isArray(manifest?.behavior) ? manifest.behavior[0] : null;
 
   // Every row mutation rebuilds and saves the whole metadata array — the API
   // takes the field wholesale.
@@ -546,8 +545,6 @@ function ManifestMetadataPanel({manifest, onSaveSummary, onSaveMetadata, onSaveB
   return (
     <Flex direction="column" gap="5" className="metadata-panel">
       <Flex direction="column" gap="3">
-        <Heading as="h3" size="4">Descriptive</Heading>
-
         <Box>
           <Text as="p" size="2" color="gray" mb="1">Description</Text>
           <InlineTextEditor
@@ -686,29 +683,31 @@ function ManifestMetadataPanel({manifest, onSaveSummary, onSaveMetadata, onSaveB
           </Box>
         </Box>
       </Flex>
+    </Flex>
+  );
+}
 
-      <Flex direction="column" gap="3">
-        <Heading as="h3" size="4">Layout</Heading>
-        <Box>
-          <Text as="p" size="2" color="gray" mb="1">Display</Text>
-          <Select.Root
-            value={behavior || BEHAVIOR_UNSET}
-            onValueChange={(value) =>
-              onSaveBehavior(value === BEHAVIOR_UNSET ? null : [value])
-            }
-          >
-            <Select.Trigger placeholder="Not set" size="2" />
-            <Select.Content>
-              <Select.Item value={BEHAVIOR_UNSET}>Not set</Select.Item>
-              {LAYOUT_BEHAVIORS.map((option) => (
-                <Select.Item key={option.value} value={option.value}>
-                  {option.label}
-                </Select.Item>
-              ))}
-            </Select.Content>
-          </Select.Root>
-        </Box>
-      </Flex>
+function ManifestLayoutPanel({manifest, onSaveBehavior}) {
+  const behavior = Array.isArray(manifest?.behavior) ? manifest.behavior[0] : null;
+  return (
+    <Flex direction="column" gap="3" className="metadata-panel">
+      <Box>
+        <Text as="p" size="2" color="gray" mb="1">Display</Text>
+        <Select.Root
+          value={behavior || BEHAVIOR_UNSET}
+          onValueChange={(value) => onSaveBehavior(value === BEHAVIOR_UNSET ? null : [value])}
+        >
+          <Select.Trigger placeholder="Not set" size="2" />
+          <Select.Content>
+            <Select.Item value={BEHAVIOR_UNSET}>Not set</Select.Item>
+            {LAYOUT_BEHAVIORS.map((option) => (
+              <Select.Item key={option.value} value={option.value}>
+                {option.label}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select.Root>
+      </Box>
     </Flex>
   );
 }
@@ -1216,6 +1215,7 @@ function WorkDetailPanel({
   const isStale = importStatus?.status === "in-progress" && importStale;
   const importInProgress = importStatus?.status === "in-progress" && !isStale;
   const [resumeError, setResumeError] = useState(null);
+  const [section, setSection] = useState("assets");
 
   // Clover mutates the manifest object it's given, and this one is the same
   // object the canvas reorder/remove handlers read from and write back to S3.
@@ -1308,46 +1308,50 @@ function WorkDetailPanel({
           </Callout.Root>
         )}
       </Card>
+      {/* Sits in the gap between the viewer and the panel below it. Left-aligned
+          via align-self, since the parent Flex would otherwise stretch it. */}
+      <SegmentedControl.Root
+        size="3"
+        value={section}
+        onValueChange={setSection}
+        style={{alignSelf: "flex-start"}}
+      >
+        <SegmentedControl.Item value="assets">Assets</SegmentedControl.Item>
+        <SegmentedControl.Item value="metadata">Metadata</SegmentedControl.Item>
+        <SegmentedControl.Item value="layout">Layout</SegmentedControl.Item>
+      </SegmentedControl.Root>
       <Card size="3" className="panel manifest-panel">
         <Box className="panel-body manifest-panel-body">
-          {/* Uncontrolled: this is in-page state, not reflected in the URL. */}
-          <Tabs.Root defaultValue="assets">
-            <Tabs.List size="2">
-              <Tabs.Trigger value="assets">Assets</Tabs.Trigger>
-              <Tabs.Trigger value="metadata">Metadata</Tabs.Trigger>
-            </Tabs.List>
-            <Box pt="4">
-              <Tabs.Content value="assets">
-                <ManifestDetail
-                  detail={manifestDetail}
-                  loading={manifestDetailLoading}
-                  error={manifestDetailError}
-                  onAttachAssets={onAttachAssets}
-                  canAddCanvas={canAddCanvas}
-                  onMoveCanvas={onMoveCanvas}
-                  onRemoveCanvas={onRemoveCanvas}
-                  onRenameCanvas={onRenameCanvas}
-                  canvasSaving={canvasSaving}
-                  canvasActionError={canvasActionError}
-                  disableAddReason={disableAddReason}
-                />
-              </Tabs.Content>
-              <Tabs.Content value="metadata">
-                {manifestDetail ? (
-                  <ManifestMetadataPanel
-                    manifest={manifestDetail.manifest}
-                    onSaveSummary={onSaveSummary}
-                    onSaveMetadata={onSaveMetadata}
-                    onSaveBehavior={onSaveBehavior}
-                  />
-                ) : (
-                  <Text as="p" color="gray" className="manifest-detail-placeholder">
-                    Select a work to edit metadata.
-                  </Text>
-                )}
-              </Tabs.Content>
-            </Box>
-          </Tabs.Root>
+          {section === "assets" ? (
+            <ManifestDetail
+              detail={manifestDetail}
+              loading={manifestDetailLoading}
+              error={manifestDetailError}
+              onAttachAssets={onAttachAssets}
+              canAddCanvas={canAddCanvas}
+              onMoveCanvas={onMoveCanvas}
+              onRemoveCanvas={onRemoveCanvas}
+              onRenameCanvas={onRenameCanvas}
+              canvasSaving={canvasSaving}
+              canvasActionError={canvasActionError}
+              disableAddReason={disableAddReason}
+            />
+          ) : !manifestDetail ? (
+            <Text as="p" color="gray" className="manifest-detail-placeholder">
+              Select a work to edit it.
+            </Text>
+          ) : section === "metadata" ? (
+            <ManifestMetadataPanel
+              manifest={manifestDetail.manifest}
+              onSaveSummary={onSaveSummary}
+              onSaveMetadata={onSaveMetadata}
+            />
+          ) : (
+            <ManifestLayoutPanel
+              manifest={manifestDetail.manifest}
+              onSaveBehavior={onSaveBehavior}
+            />
+          )}
         </Box>
       </Card>
     </Flex>

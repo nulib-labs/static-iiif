@@ -32,10 +32,10 @@ main.layout {
 }
 
 /* Wide-screen by default, but capped so content stops stretching on very wide
-   displays. The viewer and works table both get unreadable past ~1600px. */
+   displays. The viewer and works table both get unreadable past ~1400px. */
 .layout-container {
   width: 100%;
-  max-width: 1600px;
+  max-width: 1400px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
