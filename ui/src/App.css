@@ -4,6 +4,15 @@
   --heading-font-family: var(--default-font-family);
   --strong-font-family: var(--default-font-family);
   --code-font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+
+  /* Interactive surfaces (drag handles, dropzones, and anything similar): muted
+     gray at rest, muted accent on hover. Declared on .radix-themes as well as
+     :root so the gray/accent scales resolve against the active Theme rather than
+     the bare document. See "Design conventions" in AGENTS.md. */
+  --interactive-surface: var(--gray-3);
+  --interactive-surface-hover: var(--accent-3);
+  --interactive-surface-text: var(--gray-11);
+  --interactive-surface-text-hover: var(--accent-11);
 }
 
 :root {
@@ -208,6 +217,69 @@ main.layout {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.canvas-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2.5rem; /* matches .asset-dropzone-preview, the thumbnail beside it */
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-2);
+  background-color: var(--interactive-surface);
+  color: var(--interactive-surface-text);
+  cursor: grab;
+  touch-action: none; /* required, or the pointer sensor never starts on touch */
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.canvas-drag-handle:hover {
+  background-color: var(--interactive-surface-hover);
+  color: var(--interactive-surface-text-hover);
+}
+
+.canvas-drag-handle:active {
+  cursor: grabbing;
+}
+
+.canvas-list-item--dragging {
+  position: relative;
+  z-index: 1;
+  opacity: 0.6;
+}
+
+.metadata-panel {
+  max-width: 52rem;
+}
+
+/* Values stack vertically in their cell, so rows align from the top. */
+.metadata-table td,
+.metadata-table th {
+  vertical-align: top;
+}
+
+/* The work title doubles as the page heading, so it needs room to be clicked
+   without the hover highlight hugging the text too tightly. */
+.work-title-editable {
+  padding: 2px 6px;
+  margin: -2px -6px;
+}
+
+.canvas-label-editable {
+  display: inline-block;
+  align-self: flex-start;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 1px 4px;
+  margin: -1px -4px;
+}
+
+.canvas-label-editable:hover,
+.canvas-label-editable:focus-visible {
+  background-color: var(--gray-a3);
 }
 
 

@@ -337,6 +337,12 @@ Resources:
                 requestContext:
                   functionArn:
                     - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-manifest-api"
+        UpdateManifest:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/{id}
+            Method: PUT
         UpdateManifestItems:
           Type: HttpApi
           Properties:

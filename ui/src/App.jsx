@@ -5,12 +5,29 @@ import {fetchAuthSession} from "aws-amplify/auth";
 import {StorageBrowser} from "./storageBrowser";
 import AssetThumbnails from "./components/AssetThumbnails";
 import AssetDropzone from "./components/AssetDropzone";
+import {buildThumbnailUrlFromInfo} from "./lib/canvasAssets";
 import CloverViewer from "@samvera/clover-iiif/viewer";
 import {CLOVER_OPTIONS, CLOVER_THEME} from "./cloverTheme";
 import {
-  ArrowDownIcon,
-  ArrowUpIcon,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import {CSS} from "@dnd-kit/utilities";
+import {
+  DragHandleDots2Icon,
   PlusIcon,
+  CheckIcon,
   TrashIcon,
   ZoomInIcon,
 } from "@radix-ui/react-icons";
@@ -26,6 +43,8 @@ import {
   IconButton,
   Tooltip,
   TextField,
+  TextArea,
+  Select,
   Dialog,
   AlertDialog,
   Callout,
@@ -326,18 +345,416 @@ function SearchResultsList({results, loading, error}) {
   );
 }
 
+// Click the text to edit it in place; Check (or Enter) saves and reverts to plain
+// text, Escape cancels. Used for canvas labels and every manifest metadata field.
+//   multiline  — a TextArea, where Enter inserts a newline and only Check saves.
+//   allowEmpty — permit clearing the value (a description can be removed; a
+//                canvas label cannot, so it keeps the default guard).
+function InlineTextEditor({
+  value: savedValue,
+  onSave,
+  multiline = false,
+  allowEmpty = false,
+  placeholder = "Not set",
+  as = "p",
+  textProps = {weight: "bold", size: "2"},
+  fieldSize = "1",
+  ariaLabel = "Edit value",
+  className = "",
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(savedValue);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!editing) setDraft(savedValue);
+  }, [savedValue, editing]);
+
+  const startEditing = () => {
+    setError(null);
+    setDraft(savedValue);
+    setEditing(true);
+  };
+
+  const cancelEditing = () => {
+    setEditing(false);
+    setDraft(savedValue);
+    setError(null);
+  };
+
+  const handleSave = async () => {
+    const trimmed = draft.trim();
+    if ((!trimmed && !allowEmpty) || trimmed === savedValue) {
+      cancelEditing();
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(trimmed);
+      setEditing(false);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <Text
+        as={as}
+        {...textProps}
+        color={savedValue ? textProps.color : "gray"}
+        role="button"
+        tabIndex={0}
+        className={`canvas-label-editable ${className}`.trim()}
+        onClick={startEditing}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            startEditing();
+          }
+        }}
+      >
+        {savedValue || placeholder}
+      </Text>
+    );
+  }
+
+  const onKeyDown = (event) => {
+    // In a TextArea Enter has to stay a newline, so Check is the only way to save.
+    if (event.key === "Enter" && !multiline) handleSave();
+    if (event.key === "Escape") cancelEditing();
+  };
+
+  return (
+    <Flex direction="column" gap="1">
+      <Flex align={multiline ? "end" : "center"} gap="1">
+        {multiline ? (
+          <TextArea
+            size={fieldSize}
+            value={draft}
+            autoFocus
+            disabled={saving}
+            rows={3}
+            style={{flex: 1}}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={onKeyDown}
+          />
+        ) : (
+          <TextField.Root
+            size={fieldSize}
+            value={draft}
+            style={{flex: 1}}
+            autoFocus
+            disabled={saving}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={onKeyDown}
+          />
+        )}
+        <IconButton size={fieldSize} variant="soft" onClick={handleSave} loading={saving} aria-label={ariaLabel}>
+          <CheckIcon />
+        </IconButton>
+      </Flex>
+      {error && <Text as="p" size="1" color="red">{error}</Text>}
+    </Flex>
+  );
+}
+
+// One draggable canvas row. The drag handle sits at the far left, ahead of the
+// thumbnail; Remove is the only button on the right.
+function SortableCanvasCard({id, canvas, index, disabled, onRenameCanvas, onRemoveCanvas}) {
+  const {attributes, listeners, setNodeRef, transform, transition, isDragging} = useSortable({
+    id,
+    disabled,
+  });
+
+  const style = {
+    // Zero out x so a dragged card tracks the pointer vertically only — cheaper
+    // than pulling in @dnd-kit/modifiers just for restrictToVerticalAxis.
+    transform: CSS.Transform.toString(transform ? {...transform, x: 0} : null),
+    transition,
+  };
+
+  const serviceId = canvas.items?.[0]?.items?.[0]?.body?.service?.[0]?.id;
+  const thumbnailUrl = serviceId ? buildThumbnailUrlFromInfo({id: serviceId}) : null;
+
+  return (
+    <Card
+      ref={setNodeRef}
+      style={style}
+      className={`canvas-list-item ${isDragging ? "canvas-list-item--dragging" : ""}`}
+    >
+      <Flex justify="between" align="center" gap="3">
+        <Flex align="center" gap="3" className="canvas-list-info">
+          <button
+            type="button"
+            className="canvas-drag-handle"
+            aria-label="Reorder asset"
+            {...attributes}
+            {...listeners}
+          >
+            <DragHandleDots2Icon width="20" height="20" />
+          </button>
+          {thumbnailUrl ? (
+            <img src={thumbnailUrl} alt="" className="asset-dropzone-preview" />
+          ) : null}
+          <Flex direction="column" gap="1">
+            <InlineTextEditor
+              value={canvas.label?.none?.[0] || `Asset ${index + 1}`}
+              onSave={(value) => onRenameCanvas(index, value)}
+              ariaLabel="Save label"
+            />
+            <Text as="p" size="1" color="gray">
+              {serviceId || canvas.items?.[0]?.items?.[0]?.body?.id || ""}
+            </Text>
+          </Flex>
+        </Flex>
+        <Flex gap="2" className="canvas-list-actions">
+          <Tooltip content="Remove asset">
+            <IconButton
+              type="button"
+              variant="soft"
+              color="red"
+              size="1"
+              onClick={() => onRemoveCanvas(index)}
+              disabled={disabled}
+              aria-label="Remove asset"
+            >
+              <TrashIcon />
+            </IconButton>
+          </Tooltip>
+        </Flex>
+      </Flex>
+    </Card>
+  );
+}
+
+// The four IIIF layout behaviors. The spec defines these as disjoint — exactly
+// one applies — so a single-select is the right control, not a multi-select.
+const LAYOUT_BEHAVIORS = [
+  {value: "individuals", label: "Individuals — one canvas at a time"},
+  {value: "paged", label: "Paged — book-style two-page spreads"},
+  {value: "continuous", label: "Continuous — canvases joined end to end"},
+  {value: "unordered", label: "Unordered — no inherent sequence"},
+];
+const BEHAVIOR_UNSET = "__unset__";
+
+// IIIF language maps are {"none": ["a", "b"]}. Imported manifests routinely lack
+// `summary` and `behavior` entirely, so every read here tolerates undefined.
+function readLanguageMap(map) {
+  const values = map && typeof map === "object" ? Object.values(map)[0] : null;
+  return Array.isArray(values) ? values : [];
+}
+
+function toLanguageMap(values) {
+  return {none: values};
+}
+
+function ManifestMetadataPanel({manifest, onSaveSummary, onSaveMetadata, onSaveBehavior}) {
+  const entries = Array.isArray(manifest?.metadata) ? manifest.metadata : [];
+  const summary = readLanguageMap(manifest?.summary)[0] || "";
+  const behavior = Array.isArray(manifest?.behavior) ? manifest.behavior[0] : null;
+
+  // Every row mutation rebuilds and saves the whole metadata array — the API
+  // takes the field wholesale.
+  const saveEntries = (next) => onSaveMetadata(next.length ? next : null);
+
+  const updateEntry = (index, mutate) =>
+    saveEntries(entries.map((entry, i) => (i === index ? mutate(entry) : entry)));
+
+  return (
+    <Flex direction="column" gap="5" className="metadata-panel">
+      <Flex direction="column" gap="3">
+        <Heading as="h3" size="4">Descriptive</Heading>
+
+        <Box>
+          <Text as="p" size="2" color="gray" mb="1">Description</Text>
+          <InlineTextEditor
+            value={summary}
+            onSave={(value) => onSaveSummary(value ? toLanguageMap([value]) : null)}
+            multiline
+            allowEmpty
+            ariaLabel="Save description"
+            placeholder="No description"
+            textProps={{size: "3"}}
+            fieldSize="2"
+          />
+        </Box>
+
+        <Box>
+          <Text as="p" size="2" color="gray" mb="2">Additional fields</Text>
+          {entries.length === 0 ? (
+            <Text as="p" size="3" color="gray">No additional fields.</Text>
+          ) : (
+            <Table.Root variant="ghost" size="2" className="metadata-table">
+              <Table.Header>
+                <Table.Row>
+                  <Table.ColumnHeaderCell>Field</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>Values</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell />
+                </Table.Row>
+              </Table.Header>
+              <Table.Body>
+                {entries.map((entry, index) => {
+                  const values = readLanguageMap(entry.value);
+                  return (
+                    <Table.Row key={index}>
+                      <Table.RowHeaderCell>
+                        <InlineTextEditor
+                          value={readLanguageMap(entry.label)[0] || ""}
+                          onSave={(value) =>
+                            updateEntry(index, (e) => ({...e, label: toLanguageMap([value])}))
+                          }
+                          ariaLabel="Save field name"
+                          placeholder="Field name"
+                          textProps={{weight: "bold", size: "3"}}
+                          fieldSize="2"
+                        />
+                      </Table.RowHeaderCell>
+                      <Table.Cell>
+                        <Flex direction="column" gap="2">
+                          {values.map((value, valueIndex) => (
+                            <Flex key={valueIndex} align="center" gap="2">
+                              <Box style={{flex: 1, minWidth: 0}}>
+                                <InlineTextEditor
+                                  value={value}
+                                  onSave={(next) =>
+                                    updateEntry(index, (e) => ({
+                                      ...e,
+                                      value: toLanguageMap(
+                                        values.map((v, i) => (i === valueIndex ? next : v)),
+                                      ),
+                                    }))
+                                  }
+                                  ariaLabel="Save value"
+                                  textProps={{size: "3"}}
+                                  fieldSize="2"
+                                />
+                              </Box>
+                              <Tooltip content="Remove value">
+                                <IconButton
+                                  type="button"
+                                  variant="soft"
+                                  color="red"
+                                  size="1"
+                                  aria-label="Remove value"
+                                  disabled={values.length <= 1}
+                                  onClick={() =>
+                                    updateEntry(index, (e) => ({
+                                      ...e,
+                                      value: toLanguageMap(values.filter((_, i) => i !== valueIndex)),
+                                    }))
+                                  }
+                                >
+                                  <TrashIcon />
+                                </IconButton>
+                              </Tooltip>
+                            </Flex>
+                          ))}
+                          <Box>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="2"
+                              onClick={() =>
+                                updateEntry(index, (e) => ({
+                                  ...e,
+                                  value: toLanguageMap([...values, "New value"]),
+                                }))
+                              }
+                            >
+                              <PlusIcon /> Add value
+                            </Button>
+                          </Box>
+                        </Flex>
+                      </Table.Cell>
+                      <Table.Cell>
+                        <Tooltip content="Remove field">
+                          <IconButton
+                            type="button"
+                            variant="soft"
+                            color="red"
+                            size="1"
+                            aria-label="Remove field"
+                            onClick={() => saveEntries(entries.filter((_, i) => i !== index))}
+                          >
+                            <TrashIcon />
+                          </IconButton>
+                        </Tooltip>
+                      </Table.Cell>
+                    </Table.Row>
+                  );
+                })}
+              </Table.Body>
+            </Table.Root>
+          )}
+          <Box mt="2">
+            <Button
+              type="button"
+              variant="soft"
+              size="2"
+              onClick={() =>
+                saveEntries([
+                  ...entries,
+                  {label: toLanguageMap(["New field"]), value: toLanguageMap(["New value"])},
+                ])
+              }
+            >
+              <PlusIcon /> Add field
+            </Button>
+          </Box>
+        </Box>
+      </Flex>
+
+      <Flex direction="column" gap="3">
+        <Heading as="h3" size="4">Layout</Heading>
+        <Box>
+          <Text as="p" size="2" color="gray" mb="1">Display</Text>
+          <Select.Root
+            value={behavior || BEHAVIOR_UNSET}
+            onValueChange={(value) =>
+              onSaveBehavior(value === BEHAVIOR_UNSET ? null : [value])
+            }
+          >
+            <Select.Trigger placeholder="Not set" size="2" />
+            <Select.Content>
+              <Select.Item value={BEHAVIOR_UNSET}>Not set</Select.Item>
+              {LAYOUT_BEHAVIORS.map((option) => (
+                <Select.Item key={option.value} value={option.value}>
+                  {option.label}
+                </Select.Item>
+              ))}
+            </Select.Content>
+          </Select.Root>
+        </Box>
+      </Flex>
+    </Flex>
+  );
+}
+
 function ManifestDetail({
   detail,
   loading,
   error,
   onAttachAssets,
   canAddCanvas,
-  onReorderCanvas,
+  onMoveCanvas,
   onRemoveCanvas,
+  onRenameCanvas,
   canvasSaving,
   canvasActionError,
   disableAddReason,
 }) {
+  const sensors = useSensors(
+    // A small threshold keeps a click on the handle a click, and stops clicks on
+    // the label editor from being swallowed as drags.
+    useSensor(PointerSensor, {activationConstraint: {distance: 5}}),
+    useSensor(KeyboardSensor, {coordinateGetter: sortableKeyboardCoordinates}),
+  );
+
   if (loading) {
     return <Text as="p" color="gray" className="manifest-detail-placeholder">Loading work…</Text>;
   }
@@ -357,13 +774,18 @@ function ManifestDetail({
   const canvases = Array.isArray(detail.manifest?.items)
     ? detail.manifest.items
     : [];
+  const canvasIds = canvases.map((canvas, index) => canvas.id || `canvas-${index}`);
+
+  const handleDragEnd = ({active, over}) => {
+    if (!over || active.id === over.id) return;
+    const from = canvasIds.indexOf(active.id);
+    const to = canvasIds.indexOf(over.id);
+    if (from === -1 || to === -1) return;
+    onMoveCanvas(from, to);
+  };
 
   return (
     <Box className="manifest-detail">
-      <Flex direction="column" gap="1" className="manifest-detail-header">
-        <Heading as="h3" size="3" mb="1">{detail.label || detail.identifier}</Heading>
-        <Text as="p" size="1" className="manifest-detail-meta-url">{detail.manifestUrl}</Text>
-      </Flex>
       <AssetDropzone
         workId={detail.identifier}
         manifest={detail.manifest}
@@ -389,61 +811,27 @@ function ManifestDetail({
               : "No assets yet."}
           </Text>
         ) : (
-          <Flex direction="column" gap="2" className="canvas-list">
-            {canvases.map((canvas, index) => (
-              <Card key={canvas.id || `${index}`} className="canvas-list-item">
-                <Flex justify="between" align="center" gap="3">
-                  <Box className="canvas-list-info">
-                    <Text as="p" weight="bold" size="2">{canvas.label?.none?.[0] || `Asset ${index + 1}`}</Text>
-                    <Text as="p" size="1" color="gray">
-                      {canvas.items?.[0]?.items?.[0]?.body?.service?.[0]?.id ||
-                        canvas.items?.[0]?.items?.[0]?.body?.id ||
-                        ""}
-                    </Text>
-                  </Box>
-                  <Flex gap="2" className="canvas-list-actions">
-                    <Tooltip content="Move up">
-                      <IconButton
-                        type="button"
-                        variant="soft"
-                        size="1"
-                        onClick={() => onReorderCanvas(index, -1)}
-                        disabled={index === 0 || canvasSaving}
-                        aria-label="Move up"
-                      >
-                        <ArrowUpIcon />
-                      </IconButton>
-                    </Tooltip>
-                    <Tooltip content="Move down">
-                      <IconButton
-                        type="button"
-                        variant="soft"
-                        size="1"
-                        onClick={() => onReorderCanvas(index, 1)}
-                        disabled={index === canvases.length - 1 || canvasSaving}
-                        aria-label="Move down"
-                      >
-                        <ArrowDownIcon />
-                      </IconButton>
-                    </Tooltip>
-                    <Tooltip content="Remove asset">
-                      <IconButton
-                        type="button"
-                        variant="soft"
-                        color="red"
-                        size="1"
-                        onClick={() => onRemoveCanvas(index)}
-                        disabled={canvasSaving}
-                        aria-label="Remove asset"
-                      >
-                        <TrashIcon />
-                      </IconButton>
-                    </Tooltip>
-                  </Flex>
-                </Flex>
-              </Card>
-            ))}
-          </Flex>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext items={canvasIds} strategy={verticalListSortingStrategy}>
+              <Flex direction="column" gap="2" className="canvas-list">
+                {canvases.map((canvas, index) => (
+                  <SortableCanvasCard
+                    key={canvasIds[index]}
+                    id={canvasIds[index]}
+                    canvas={canvas}
+                    index={index}
+                    disabled={canvasSaving}
+                    onRenameCanvas={onRenameCanvas}
+                    onRemoveCanvas={onRemoveCanvas}
+                  />
+                ))}
+              </Flex>
+            </SortableContext>
+          </DndContext>
         )}
       </Box>
     </Box>
@@ -829,13 +1217,19 @@ function WorkDetailPanel({
   manifestDetail,
   manifestDetailLoading,
   manifestDetailError,
+  viewerRevision,
   importStatus,
   onResumeImport,
   onAttachAssets,
   canAddCanvas,
   importStale,
-  onReorderCanvas,
+  onMoveCanvas,
   onRemoveCanvas,
+  onRenameCanvas,
+  onSaveTitle,
+  onSaveSummary,
+  onSaveMetadata,
+  onSaveBehavior,
   canvasSaving,
   canvasActionError,
   disableAddReason,
@@ -864,7 +1258,18 @@ function WorkDetailPanel({
     <Flex direction="column" gap="5">
       {manifestDetail && (
         <Flex direction="column" gap="1">
-          <Heading as="h1" size="6">{manifestDetail.label || manifestDetail.identifier}</Heading>
+          {/* The work title is edited here rather than in the Metadata tab —
+              it is the page's own heading. */}
+          <InlineTextEditor
+            as="h1"
+            value={manifestDetail.label || ""}
+            onSave={onSaveTitle}
+            placeholder={manifestDetail.identifier}
+            ariaLabel="Save title"
+            textProps={{weight: "bold", size: "6"}}
+            fieldSize="3"
+            className="work-title-editable"
+          />
           <Flex align="center" gap="2" style={{fontFamily: "var(--code-font-family)", fontSize: "var(--font-size-2)"}}>
             <Link asChild underline="always">
               <RouterLink to="/works">works</RouterLink>
@@ -908,7 +1313,7 @@ function WorkDetailPanel({
               style={{width: "100%"}}
             >
               <CloverViewer
-                key={manifestDetail.identifier}
+                key={`${manifestDetail.identifier}::${viewerRevision}`}
                 iiifContent={viewerContent}
                 customTheme={CLOVER_THEME}
                 options={CLOVER_OPTIONS}
@@ -928,18 +1333,46 @@ function WorkDetailPanel({
       </Card>
       <Card size="3" className="panel manifest-panel">
         <Box className="panel-body manifest-panel-body">
-          <ManifestDetail
-            detail={manifestDetail}
-            loading={manifestDetailLoading}
-            error={manifestDetailError}
-            onAttachAssets={onAttachAssets}
-            canAddCanvas={canAddCanvas}
-            onReorderCanvas={onReorderCanvas}
-            onRemoveCanvas={onRemoveCanvas}
-            canvasSaving={canvasSaving}
-            canvasActionError={canvasActionError}
-            disableAddReason={disableAddReason}
-          />
+          {/* Nested, uncontrolled tabs — this is in-page state, unlike the
+              URL-driven Works/Assets tabs at the top. `.tabs-large` is
+              deliberately omitted so these read as subordinate to those. */}
+          <Tabs.Root defaultValue="assets">
+            <Tabs.List size="2">
+              <Tabs.Trigger value="assets">Assets</Tabs.Trigger>
+              <Tabs.Trigger value="metadata">Metadata</Tabs.Trigger>
+            </Tabs.List>
+            <Box pt="4">
+              <Tabs.Content value="assets">
+                <ManifestDetail
+                  detail={manifestDetail}
+                  loading={manifestDetailLoading}
+                  error={manifestDetailError}
+                  onAttachAssets={onAttachAssets}
+                  canAddCanvas={canAddCanvas}
+                  onMoveCanvas={onMoveCanvas}
+                  onRemoveCanvas={onRemoveCanvas}
+                  onRenameCanvas={onRenameCanvas}
+                  canvasSaving={canvasSaving}
+                  canvasActionError={canvasActionError}
+                  disableAddReason={disableAddReason}
+                />
+              </Tabs.Content>
+              <Tabs.Content value="metadata">
+                {manifestDetail ? (
+                  <ManifestMetadataPanel
+                    manifest={manifestDetail.manifest}
+                    onSaveSummary={onSaveSummary}
+                    onSaveMetadata={onSaveMetadata}
+                    onSaveBehavior={onSaveBehavior}
+                  />
+                ) : (
+                  <Text as="p" color="gray" className="manifest-detail-placeholder">
+                    Select a work to edit metadata.
+                  </Text>
+                )}
+              </Tabs.Content>
+            </Box>
+          </Tabs.Root>
         </Box>
       </Card>
     </Flex>
@@ -973,6 +1406,11 @@ export default function App({ signOut }) {
   const [manifestDetail, setManifestDetail] = useState(null);
   const [manifestDetailLoading, setManifestDetailLoading] = useState(false);
   const [manifestDetailError, setManifestDetailError] = useState(null);
+  // Clover parses a manifest into a vault built once per mount, and never re-reads
+  // an id it has already normalized — so a save only reaches the viewer if we
+  // remount it. Bumped whenever a manifest lands from the server; it feeds the
+  // viewer's React key.
+  const [viewerRevision, setViewerRevision] = useState(0);
   const [importStatus, setImportStatus] = useState(null);
   const [importStale, setImportStale] = useState(false);
   const [importPollGeneration, setImportPollGeneration] = useState(0);
@@ -1061,6 +1499,7 @@ export default function App({ signOut }) {
       }
       const data = await apiFetch(endpoint, {errorMessage: "Unable to load work"});
       setManifestDetail(data.manifest);
+      setViewerRevision((revision) => revision + 1);
       setManifests((prev) =>
         prev.map((manifest) =>
           manifest.identifier === identifier
@@ -1206,6 +1645,7 @@ export default function App({ signOut }) {
           errorMessage: "Unable to save assets",
         });
         setManifestDetail(data.manifest);
+        setViewerRevision((revision) => revision + 1);
         setManifests((prev) =>
           prev.map((manifest) =>
             manifest.identifier === selectedManifestId
@@ -1224,6 +1664,52 @@ export default function App({ signOut }) {
     [manifestApiUrl, selectedManifestId],
   );
 
+  // Manifest-level fields (label/summary/metadata/behavior) go through their own
+  // route; PUT .../items writes only `items`.
+  const persistManifestFields = useCallback(
+    async (fields) => {
+      if (!selectedManifestId) {
+        throw new Error("Select a work first");
+      }
+      const endpoint = manifestApiUrl(encodeURIComponent(selectedManifestId));
+      const data = await apiFetch(endpoint, {
+        method: "PUT",
+        body: fields,
+        errorMessage: "Unable to save metadata",
+      });
+      setManifestDetail(data.manifest);
+      // `label` retitles the viewer and `behavior: paged` re-lays it out, so the
+      // viewer has to reload the same way an items save makes it reload.
+      setViewerRevision((revision) => revision + 1);
+      setManifests((prev) =>
+        prev.map((manifest) =>
+          manifest.identifier === selectedManifestId
+            ? {...manifest, label: data.manifest.label}
+            : manifest,
+        ),
+      );
+      return data.manifest;
+    },
+    [manifestApiUrl, selectedManifestId],
+  );
+
+  const handleSaveTitle = useCallback(
+    (value) => persistManifestFields({label: {none: [value]}}),
+    [persistManifestFields],
+  );
+  const handleSaveSummary = useCallback(
+    (summary) => persistManifestFields({summary}),
+    [persistManifestFields],
+  );
+  const handleSaveMetadata = useCallback(
+    (metadata) => persistManifestFields({metadata}),
+    [persistManifestFields],
+  );
+  const handleSaveBehavior = useCallback(
+    (behavior) => persistManifestFields({behavior}),
+    [persistManifestFields],
+  );
+
   const handleAttachAssets = useCallback(
     async (newCanvases) => {
       if (!manifestDetail?.manifest) {
@@ -1235,17 +1721,24 @@ export default function App({ signOut }) {
     [manifestDetail, persistManifestItems],
   );
 
-  const handleReorderCanvas = useCallback(
-    async (index, delta) => {
-      if (!manifestDetail?.manifest?.items) return;
-      const items = [...manifestDetail.manifest.items];
-      const targetIndex = index + delta;
-      if (targetIndex < 0 || targetIndex >= items.length) return;
-      [items[index], items[targetIndex]] = [items[targetIndex], items[index]];
+  const handleMoveCanvas = useCallback(
+    async (fromIndex, toIndex) => {
+      const current = manifestDetail?.manifest?.items;
+      if (!current) return;
+      const nextItems = arrayMove(current, fromIndex, toIndex);
+      // Show the new order at once; the PUT below only confirms it. Without this
+      // the dropped card snaps back for the whole round-trip, because
+      // persistManifestItems sets state only after the server responds.
+      setManifestDetail((prev) =>
+        prev ? {...prev, manifest: {...prev.manifest, items: nextItems}} : prev,
+      );
       try {
-        await persistManifestItems(items);
+        await persistManifestItems(nextItems);
       } catch {
-        // Error handled via canvasActionError state.
+        // Roll back to the pre-drag order; the message surfaces via canvasActionError.
+        setManifestDetail((prev) =>
+          prev ? {...prev, manifest: {...prev.manifest, items: current}} : prev,
+        );
       }
     },
     [manifestDetail, persistManifestItems],
@@ -1260,6 +1753,19 @@ export default function App({ signOut }) {
       } catch {
         // Error handled via canvasActionError state.
       }
+    },
+    [manifestDetail, persistManifestItems],
+  );
+
+  const handleRenameCanvas = useCallback(
+    async (index, label) => {
+      if (!manifestDetail?.manifest?.items) return;
+      const trimmed = label.trim();
+      if (!trimmed) return;
+      const items = manifestDetail.manifest.items.map((canvas, idx) =>
+        idx === index ? {...canvas, label: {none: [trimmed]}} : canvas,
+      );
+      await persistManifestItems(items);
     },
     [manifestDetail, persistManifestItems],
   );
@@ -1367,13 +1873,19 @@ export default function App({ signOut }) {
                 manifestDetail={manifestDetail}
                 manifestDetailLoading={manifestDetailLoading}
                 manifestDetailError={manifestDetailError}
+                viewerRevision={viewerRevision}
                 importStatus={importStatus}
                 importStale={importStale}
                 onResumeImport={handleResumeImport}
                 onAttachAssets={handleAttachAssets}
                 canAddCanvas={canAddCanvas}
-                onReorderCanvas={handleReorderCanvas}
+                onMoveCanvas={handleMoveCanvas}
                 onRemoveCanvas={handleRemoveCanvas}
+                onRenameCanvas={handleRenameCanvas}
+                onSaveTitle={handleSaveTitle}
+                onSaveSummary={handleSaveSummary}
+                onSaveMetadata={handleSaveMetadata}
+                onSaveBehavior={handleSaveBehavior}
                 canvasSaving={canvasSaving}
                 canvasActionError={canvasActionError}
                 disableAddReason={disableAddReason}

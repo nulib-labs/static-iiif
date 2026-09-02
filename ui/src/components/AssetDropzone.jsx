@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import {uploadData} from "aws-amplify/storage";
 import {ImageIcon, TrashIcon, UploadIcon} from "@radix-ui/react-icons";
-import {Box, Button, Callout, Flex, IconButton, Progress, Text, TextField} from "@radix-ui/themes";
+import {Box, Button, Callout, Em, Flex, IconButton, Progress, Text, TextField} from "@radix-ui/themes";
 import {assetLabelFromKey, buildCanvasResource, buildInfoUrlFromKey, buildThumbnailUrlFromInfo} from "../lib/canvasAssets";
 import "./AssetDropzone.css";
 
@@ -203,24 +203,41 @@ export default function AssetDropzone({workId, manifest, disabled, disabledReaso
 
   return (
     <Box className="asset-dropzone-panel">
+      {/* The zone is no longer a button itself — the Upload button inside it is the
+          accessible affordance, and nesting a button inside role="button" is invalid.
+          Clicking the zone still opens the picker as a convenience. */}
       <Box
-        role="button"
-        tabIndex={disabled ? -1 : 0}
-        aria-disabled={disabled}
         className={`asset-dropzone ${dragActive ? "asset-dropzone--active" : ""} ${disabled ? "asset-dropzone--disabled" : ""}`}
         onClick={handleZoneClick}
-        onKeyDown={(event) => (event.key === "Enter" || event.key === " ") && handleZoneClick()}
         onDragOver={handleDragOver}
         onDragEnter={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <UploadIcon width="20" height="20" />
-        <Text as="p" size="2" color={disabled ? "gray" : undefined}>
-          {disabled
-            ? disabledReason || "Uploads unavailable."
-            : "Drag and drop images here, or click to browse."}
-        </Text>
+        {disabled ? (
+          <Text as="p" size="2" color="gray">
+            {disabledReason || "Uploads unavailable."}
+          </Text>
+        ) : (
+          <Flex align="center" justify="center" gap="2" wrap="wrap">
+            <Text as="span" size="2">
+              Drag new assets here <Em>or</Em>
+            </Text>
+            <Button
+              type="button"
+              size="1"
+              onClick={(event) => {
+                // The zone behind this is clickable too; without this the picker
+                // would be opened twice by a single click.
+                event.stopPropagation();
+                handleZoneClick();
+              }}
+            >
+              <UploadIcon />
+              Upload
+            </Button>
+          </Flex>
+        )}
         <input
           ref={fileInputRef}
           type="file"

@@ -195,6 +195,41 @@ function manifestDetail(identifier, manifest) {
   };
 }
 
+// Only these manifest-level fields may be written through the API. Everything
+// else — id, type, @context, items, thumbnail — is owned by the server, so a
+// request body can never reach them.
+const EDITABLE_MANIFEST_FIELDS = ["label", "summary", "metadata", "behavior"];
+
+// A IIIF language map: {"none": ["value", ...]} — every value an array of strings.
+function isLanguageMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entries = Object.values(value);
+  if (entries.length === 0) return false;
+  return entries.every(
+    (entry) => Array.isArray(entry) && entry.every((item) => typeof item === "string"),
+  );
+}
+
+function validateManifestField(field, value) {
+  if (value === null) return null; // an explicit null unsets the field
+  switch (field) {
+    case "label":
+    case "summary":
+      return isLanguageMap(value) ? null : `${field} must be a language map`;
+    case "metadata":
+      if (!Array.isArray(value)) return "metadata must be an array";
+      return value.every((entry) => entry && isLanguageMap(entry.label) && isLanguageMap(entry.value))
+        ? null
+        : "each metadata entry must have a label and value language map";
+    case "behavior":
+      return Array.isArray(value) && value.every((item) => typeof item === "string")
+        ? null
+        : "behavior must be an array of strings";
+    default:
+      return `${field} is not editable`;
+  }
+}
+
 async function readManifest(identifier) {
   return readManifestShared({s3, bucket, identifier});
 }
@@ -357,6 +392,46 @@ exports.handler = async (event) => {
         }
         console.error("Read manifest failed", error);
         return jsonResponse(500, { error: "Unable to load manifest" });
+      }
+    }
+
+    if (method === "PUT") {
+      try {
+        const body = parseBody(event);
+        const updates = EDITABLE_MANIFEST_FIELDS.filter((field) =>
+          Object.prototype.hasOwnProperty.call(body, field),
+        );
+        if (updates.length === 0) {
+          return jsonResponse(400, {
+            error: `Provide at least one of: ${EDITABLE_MANIFEST_FIELDS.join(", ")}`,
+          });
+        }
+        for (const field of updates) {
+          const problem = validateManifestField(field, body[field]);
+          if (problem) {
+            return jsonResponse(400, { error: problem });
+          }
+        }
+
+        const manifest = await readManifest(identifier);
+        for (const field of updates) {
+          if (body[field] === null) {
+            delete manifest[field];
+          } else {
+            manifest[field] = body[field];
+          }
+        }
+        await writeManifest(identifier, manifest);
+        return jsonResponse(200, { manifest: manifestDetail(identifier, manifest) });
+      } catch (error) {
+        if (error.message === "Invalid JSON payload") {
+          return jsonResponse(400, { error: error.message });
+        }
+        if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
+          return jsonResponse(404, { error: "Manifest not found" });
+        }
+        console.error("Update manifest failed", error);
+        return jsonResponse(500, { error: "Unable to update manifest" });
       }
     }
 
