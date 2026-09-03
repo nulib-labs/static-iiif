@@ -58,6 +58,16 @@ ui/                        # React/Vite frontend — talks to the deployed AWS s
 - `npm test` — placeholder; replace with your actual test runner as coverage is added.
 - `cd app/aws && sam build --use-container && sam deploy --guided` — one-time build and deploy of your personal dev stack. Docker must be running; `--use-container` is required so SAM installs native dependencies (e.g. sharp) inside a Linux arm64 container matching the Lambda runtime. Requires `app/aws/samconfig.toml` (see Local Development below).
 - `cd app/aws && sam sync --watch` — fast iterative redeploys of Lambda code changes to your personal stack (see Local Development).
+
+> **Never run a bare `sam build` as a substitute when Docker is down.** It builds *every*
+> function, and `iiif-image` bundles `sharp`'s platform-specific native binary. Off a Mac
+> you get `@img/sharp-darwin-arm64` instead of `linux-arm64`, the build and deploy both
+> report success, and the converter then dies on cold start with
+> `Could not load the "sharp" module using the linux-arm64 runtime`. Nothing surfaces in
+> the UI except imports that stall on "Converting image…", because the pyramid TIFF never
+> appears. Start Docker and rebuild with `--use-container` instead. To confirm a build is
+> sound: `ls app/aws/.aws-sam/build/IIIFImageFunction/node_modules/@img/` should list
+> `sharp-linux-arm64` and no `darwin` entries.
 - `cd ui && npm run dev` — start the Vite dev server for the frontend, pointed at your personal stack's endpoints via `ui/.env.local`.
 
 ## Local Development
@@ -152,6 +162,10 @@ color: var(--interactive-surface-text-hover);        /* --accent-11 */
 ```
 
 Pair them with `transition: background-color 0.15s ease, color 0.15s ease`. A surface that also has an *active* state (mid-drag, for example) should read one step stronger than hover — `--accent-4` — so the live target is unmistakable. Current examples: `.canvas-drag-handle` in `ui/src/App.css` and `.asset-dropzone` in `ui/src/components/AssetDropzone.css`.
+
+The same gray-to-accent idea applies to **editable text** (`.canvas-label-editable`), which has no resting background and only lights up on hover. Use the *alpha* step `--accent-a3` there rather than the solid `--accent-3`: that highlight sits over cards, table rows and the page background, so it has to blend with whatever is behind it.
+
+**Metadata field spacing.** Field groups in the Metadata and Layout panels — Description, Additional fields, Display — are separated by **2rem**, via the shared `.metadata-fields` class in `ui/src/App.css`. Add new fields as children of that container rather than giving them a `gap` prop of their own, and the spacing comes for free. The fields are visually distinct blocks with their own small label-to-control spacing (`mb="1"`), so they need noticeably more room between groups than a default Radix gap provides.
 
 The tokens are declared on `:root, .radix-themes` together. Radix redeclares its scales on `.radix-themes`, so a token defined only on `:root` resolves against the bare document and silently misses the active theme's gray/accent — the same trap that applies to the font-family overrides above it.
 

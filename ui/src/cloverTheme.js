@@ -18,4 +18,9 @@ export const CLOVER_THEME = {
 export const CLOVER_OPTIONS = {
   showIIIFBadge: false,
   showTitle: false,
+  informationPanel: {
+    // Collapsed on load; renderToggle keeps the user's control to open it.
+    open: false,
+    renderToggle: true,
+  },
 };

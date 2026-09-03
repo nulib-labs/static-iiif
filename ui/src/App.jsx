@@ -25,7 +25,6 @@ import {
 import {CSS} from "@dnd-kit/utilities";
 import {
   ArrowUpIcon,
-  DragHandleDots2Icon,
   PlusIcon,
   CheckIcon,
   TrashIcon,
@@ -47,6 +46,7 @@ import {
   Select,
   Dialog,
   AlertDialog,
+  DropdownMenu,
   Callout,
   Badge,
   Progress,
@@ -154,7 +154,7 @@ function ManifestList({manifests, selectedId, onDelete}) {
 
   return (
     <>
-      <Table.Root variant="surface" className="manifest-list">
+      <Table.Root variant="ghost" className="manifest-list">
         <Table.Header>
           <Table.Row>
             <Table.ColumnHeaderCell>Title</Table.ColumnHeaderCell>
@@ -441,12 +441,35 @@ function InlineTextEditor({
   );
 }
 
-// One draggable canvas row. The drag handle sits at the far left, ahead of the
-// thumbnail; Remove is the only button on the right.
-function SortableCanvasCard({id, canvas, index, disabled, onRenameCanvas, onRemoveCanvas}) {
+// Radix's DragHandleDots icons are 2 columns wide; this is a 3x3 grid.
+function DragHandleGridIcon({size = 18}) {
+  const positions = [3, 8, 13];
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      {positions.flatMap((cx) =>
+        positions.map((cy) => <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="1.4" />),
+      )}
+    </svg>
+  );
+}
+
+// One canvas row. Imported canvases are draggable and removable; canvases the
+// import chain has not reached yet show their own progress instead — reordering
+// mid-import would desync the chain, which walks canvases by index.
+function SortableCanvasCard({
+  id,
+  canvas,
+  index,
+  disabled,
+  importState,
+  importPhase,
+  onRenameCanvas,
+  onRemoveCanvas,
+}) {
+  const isImported = importState === "done";
   const {attributes, listeners, setNodeRef, transform, transition, isDragging} = useSortable({
     id,
-    disabled,
+    disabled: disabled || !isImported,
   });
 
   const style = {
@@ -463,32 +486,54 @@ function SortableCanvasCard({id, canvas, index, disabled, onRenameCanvas, onRemo
     <Card
       ref={setNodeRef}
       style={style}
-      className={`canvas-list-item ${isDragging ? "canvas-list-item--dragging" : ""}`}
+      className={[
+        "canvas-list-item",
+        isDragging ? "canvas-list-item--dragging" : "",
+        isImported ? "" : "canvas-list-item--importing",
+      ].filter(Boolean).join(" ")}
     >
       <Flex justify="between" align="center" gap="3">
         <Flex align="center" gap="3" className="canvas-list-info">
-          <button
-            type="button"
-            className="canvas-drag-handle"
-            aria-label="Reorder asset"
-            {...attributes}
-            {...listeners}
-          >
-            <DragHandleDots2Icon width="20" height="20" />
-          </button>
+          {isImported ? (
+            <button
+              type="button"
+              className="canvas-drag-handle"
+              aria-label="Reorder asset"
+              {...attributes}
+              {...listeners}
+            >
+              <DragHandleGridIcon />
+            </button>
+          ) : (
+            <span className="canvas-drag-handle canvas-drag-handle--inert" aria-hidden="true">
+              <DragHandleGridIcon />
+            </span>
+          )}
           {thumbnailUrl ? (
             <img src={thumbnailUrl} alt="" className="asset-dropzone-preview" />
           ) : null}
-          <Flex direction="column" gap="1">
+          {isImported ? (
             <InlineTextEditor
               value={canvas.label?.none?.[0] || `Asset ${index + 1}`}
               onSave={(value) => onRenameCanvas(index, value)}
               ariaLabel="Save label"
+              textProps={{weight: "bold", size: "3"}}
+              fieldSize="2"
             />
-            <Text as="p" size="1" color="gray">
-              {serviceId || canvas.items?.[0]?.items?.[0]?.body?.id || ""}
-            </Text>
-          </Flex>
+          ) : (
+            <Flex direction="column" gap="1" className="canvas-import-progress">
+              <Text as="p" size="3" weight="bold" color="gray">
+                {canvas.label?.none?.[0] || `Asset ${index + 1}`}
+              </Text>
+              <Text as="p" size="1" color="gray">
+                {importState === "active" ? importPhase || "Importing…" : "Waiting to import…"}
+              </Text>
+              {/* Indeterminate while this canvas is the one being worked on. */}
+              <Progress size="1" duration={importState === "active" ? "60s" : undefined}
+                        value={importState === "active" ? undefined : 0}
+                        max={100} />
+            </Flex>
+          )}
         </Flex>
         <Flex gap="2" className="canvas-list-actions">
           <Tooltip content="Remove asset">
@@ -498,7 +543,7 @@ function SortableCanvasCard({id, canvas, index, disabled, onRenameCanvas, onRemo
               color="red"
               size="1"
               onClick={() => onRemoveCanvas(index)}
-              disabled={disabled}
+              disabled={disabled || !isImported}
               aria-label="Remove asset"
             >
               <TrashIcon />
@@ -544,7 +589,7 @@ function ManifestMetadataPanel({manifest, onSaveSummary, onSaveMetadata}) {
 
   return (
     <Flex direction="column" gap="5" className="metadata-panel">
-      <Flex direction="column" gap="3">
+      <Flex direction="column" className="metadata-fields">
         <Box>
           <Text as="p" size="2" color="gray" mb="1">Description</Text>
           <InlineTextEditor
@@ -690,7 +735,7 @@ function ManifestMetadataPanel({manifest, onSaveSummary, onSaveMetadata}) {
 function ManifestLayoutPanel({manifest, onSaveBehavior}) {
   const behavior = Array.isArray(manifest?.behavior) ? manifest.behavior[0] : null;
   return (
-    <Flex direction="column" gap="3" className="metadata-panel">
+    <Flex direction="column" className="metadata-panel metadata-fields">
       <Box>
         <Text as="p" size="2" color="gray" mb="1">Display</Text>
         <Select.Root
@@ -721,6 +766,7 @@ function ManifestDetail({
   onMoveCanvas,
   onRemoveCanvas,
   onRenameCanvas,
+  importStatus,
   canvasSaving,
   canvasActionError,
   disableAddReason,
@@ -752,6 +798,17 @@ function ManifestDetail({
     ? detail.manifest.items
     : [];
   const canvasIds = canvases.map((canvas, index) => canvas.id || `canvas-${index}`);
+
+  // The import chain walks canvases in order, so `completed` is the boundary
+  // between what has been copied locally and what has not. No active import
+  // means everything is already local.
+  const canvasImportState = (index) => {
+    if (!importStatus) return "done";
+    const completed = importStatus.completed ?? 0;
+    if (index < completed) return "done";
+    if (index === (importStatus.currentIndex ?? completed)) return "active";
+    return "pending";
+  };
 
   const handleDragEnd = ({active, over}) => {
     if (!over || active.id === over.id) return;
@@ -802,6 +859,8 @@ function ManifestDetail({
                     canvas={canvas}
                     index={index}
                     disabled={canvasSaving}
+                    importState={canvasImportState(index)}
+                    importPhase={importStatus?.phase}
                     onRenameCanvas={onRenameCanvas}
                     onRemoveCanvas={onRemoveCanvas}
                   />
@@ -1216,6 +1275,23 @@ function WorkDetailPanel({
   const importInProgress = importStatus?.status === "in-progress" && !isStale;
   const [resumeError, setResumeError] = useState(null);
   const [section, setSection] = useState("assets");
+  const [sharedNotice, setSharedNotice] = useState(null);
+
+  // Copy rather than open: "Share" is about handing the URL to someone else, and
+  // the raw manifest is already one click away in the viewer's About panel.
+  const handleShareManifest = async () => {
+    const url = manifestDetail?.manifestUrl;
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setSharedNotice("Copied!");
+    } catch {
+      // Clipboard access can be blocked; fall back to opening the manifest.
+      window.open(url, "_blank", "noopener");
+      setSharedNotice("Opened");
+    }
+    setTimeout(() => setSharedNotice(null), 1500);
+  };
 
   // Clover mutates the manifest object it's given, and this one is the same
   // object the canvas reorder/remove handlers read from and write back to S3.
@@ -1235,8 +1311,8 @@ function WorkDetailPanel({
   return (
     <Flex direction="column" gap="5">
       {manifestDetail && (
-        <Flex direction="column" align="center" gap="7">
-          <Button asChild variant="soft" size="2">
+        <Flex direction="column" align="center" gap="7" pt="8">
+          <Button asChild size="3">
             <RouterLink to="/works">
               <ArrowUpIcon /> View all Works
             </RouterLink>
@@ -1270,16 +1346,6 @@ function WorkDetailPanel({
           </Callout.Text>
         </Callout.Root>
       )}
-      {importInProgress && (
-        <Flex direction="column" gap="1">
-          <Text size="2" color="gray">
-            Importing image {Math.min((importStatus.currentIndex ?? 0) + 1, importStatus.total)} of{" "}
-            {importStatus.total}
-            {importStatus.phase ? ` — ${importStatus.phase}` : ""}
-          </Text>
-          <Progress value={importStatus.completed} max={importStatus.total || 1} />
-        </Flex>
-      )}
       <Card size="3" className="panel viewer-panel">
         {manifestDetailLoading ? (
           <Text as="p" color="gray" className="viewer-placeholder">Loading work…</Text>
@@ -1308,18 +1374,28 @@ function WorkDetailPanel({
           </Callout.Root>
         )}
       </Card>
-      {/* Sits in the gap between the viewer and the panel below it. Left-aligned
-          via align-self, since the parent Flex would otherwise stretch it. */}
-      <SegmentedControl.Root
-        size="3"
-        value={section}
-        onValueChange={setSection}
-        style={{alignSelf: "flex-start"}}
-      >
-        <SegmentedControl.Item value="assets">Assets</SegmentedControl.Item>
-        <SegmentedControl.Item value="metadata">Metadata</SegmentedControl.Item>
-        <SegmentedControl.Item value="layout">Layout</SegmentedControl.Item>
-      </SegmentedControl.Root>
+      {/* Sits in the gap between the viewer and the panel below it. */}
+      <Flex justify="between" align="center" gap="3" mt="6">
+        <SegmentedControl.Root size="3" value={section} onValueChange={setSection}>
+          <SegmentedControl.Item value="assets">Assets</SegmentedControl.Item>
+          <SegmentedControl.Item value="metadata">Metadata</SegmentedControl.Item>
+          <SegmentedControl.Item value="layout">Layout</SegmentedControl.Item>
+        </SegmentedControl.Root>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger disabled={!manifestDetail}>
+            {/* Content caps at size 2, but the trigger matches the segmented control. */}
+            <Button size="3">
+              Share
+              <DropdownMenu.TriggerIcon />
+            </Button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content size="2">
+            <DropdownMenu.Item onSelect={handleShareManifest}>
+              {sharedNotice || "IIIF Manifest"}
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
+      </Flex>
       <Card size="3" className="panel manifest-panel">
         <Box className="panel-body manifest-panel-body">
           {section === "assets" ? (
@@ -1332,6 +1408,7 @@ function WorkDetailPanel({
               onMoveCanvas={onMoveCanvas}
               onRemoveCanvas={onRemoveCanvas}
               onRenameCanvas={onRenameCanvas}
+              importStatus={importInProgress ? importStatus : null}
               canvasSaving={canvasSaving}
               canvasActionError={canvasActionError}
               disableAddReason={disableAddReason}
@@ -1816,17 +1893,28 @@ export default function App({ signOut }) {
   })();
 
   return (
-    <main className="layout">
+    <>
+      {/* Full-bleed purple utility bar, mirroring the one at the top of
+          library.northwestern.edu. Its contents align to the same container
+          width as the page below it. */}
+      <header className="nu-header">
+        <div className="nu-header-inner">
+          <a className="nu-wordmark" href="https://www.northwestern.edu/">
+            {/* The wordmark is a background image, so keep the name available to
+                screen readers — same approach the Northwestern sites use. */}
+            <span className="nu-wordmark-label">Northwestern</span>
+          </a>
+          {signOut && (
+            <button type="button" className="nu-header-action" onClick={signOut}>
+              Sign out
+            </button>
+          )}
+        </div>
+      </header>
+      <main className="layout">
       <div className="layout-container">
         <Flex direction="column" gap="2" className="layout-header">
-          <Flex justify="between" align="start" gap="3">
-            <Heading as="h1" size="5">Static IIIF</Heading>
-            {signOut && (
-              <Button type="button" variant="soft" color="gray" onClick={signOut}>
-                Sign out
-              </Button>
-            )}
-          </Flex>
+          <Heading as="h1" size="5">Static IIIF</Heading>
         </Flex>
         <Box pt="2">
           {selectedManifestId ? (
@@ -1884,6 +1972,7 @@ export default function App({ signOut }) {
           importConfirming={importConfirming}
         />
       </div>
-    </main>
+      </main>
+    </>
   );
 }
