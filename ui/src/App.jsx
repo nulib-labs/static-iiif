@@ -749,15 +749,17 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
     if (!editing) setDraft(savedCollections);
   }, [savedCollections, editing]);
 
+  // Suggestions are existing collections only — there is no "Create" row, because
+  // Enter (or Check) already creates whatever is typed. Offering both a row and a
+  // key for the same action is what made this feel fiddly.
   const options = useMemo(() => {
     const typed = query.trim();
-    const typedSlug = collectionSlug(typed);
     const chosen = new Set(draft.map(collectionSlug));
     const needle = typed.toLowerCase();
 
     // Already-chosen collections drop out: they are chips a few pixels away, so
     // re-offering them is noise.
-    const rows = vocabulary
+    return vocabulary
       .filter((entry) => !chosen.has(entry.slug))
       .filter((entry) => !needle || entry.label.toLowerCase().includes(needle))
       .sort((a, b) => {
@@ -768,36 +770,34 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
           return label.startsWith(needle) ? 1 : 2;
         };
         return rank(a) - rank(b) || a.label.localeCompare(b.label);
-      })
-      .map((entry) => ({
-        kind: "existing",
-        key: entry.slug,
-        label: entry.label,
-        itemCount: entry.itemCount,
-      }));
-
-    // Create is offered only when nothing in the vocabulary normalizes onto the
-    // typed text, so "campus maps" matches "Campus Maps" rather than proposing a
-    // second collection that would slug onto the first one server-side.
-    if (typedSlug && !vocabulary.some((entry) => entry.slug === typedSlug) && !chosen.has(typedSlug)) {
-      rows.push({kind: "create", key: `create:${typedSlug}`, label: typed});
-    }
-    return rows;
+      });
   }, [vocabulary, query, draft]);
 
+  // Adding is one rule, used by Enter, by a click, and by Check — so all three
+  // land in the same place. A name that normalizes onto a collection we already
+  // know adopts that collection's own spelling, so "campus maps" cannot fork
+  // "Campus Maps"; anything else is simply new.
+  const withCollection = (list, label) => {
+    const value = (label || "").trim();
+    const slug = collectionSlug(value);
+    if (!slug || list.some((name) => collectionSlug(name) === slug)) return list;
+    const known = vocabulary.find((entry) => entry.slug === slug);
+    return [...list, known ? known.label : value];
+  };
+
   const typedSlug = collectionSlug(query);
-  // Derived during render rather than stored: an exact normalized match leads on
-  // its own so Enter reuses it, and `activeIndex` only ever holds explicit
-  // arrow/pointer intent. Clamped here so a stale index cannot run past the list.
-  const exactIndex = options.findIndex(
-    (option) => option.kind === "existing" && collectionSlug(option.label) === typedSlug,
-  );
-  const highlighted = activeIndex >= 0 && activeIndex < options.length ? activeIndex : exactIndex;
+  // Only explicit arrow/pointer intent highlights a row. Enter otherwise uses
+  // exactly what was typed, so what you get is never a function of invisible
+  // state. Clamped so a stale index cannot run past the list.
+  const highlighted = activeIndex >= 0 && activeIndex < options.length ? activeIndex : -1;
   const showList = listOpen && options.length > 0;
   const duplicate = Boolean(typedSlug) && draft.some((name) => collectionSlug(name) === typedSlug);
 
+  // Text still sitting in the input counts as part of the edit: Check commits it
+  // rather than silently discarding it.
+  const pendingDraft = withCollection(draft, query);
   const sortedSlugs = (names) => names.map(collectionSlug).sort().join("\u0000");
-  const isDirty = sortedSlugs(savedCollections) !== sortedSlugs(draft);
+  const isDirty = sortedSlugs(savedCollections) !== sortedSlugs(pendingDraft);
 
   const startEditing = () => {
     setDraft(savedCollections);
@@ -818,15 +818,8 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
   };
 
   const addCollection = (label) => {
-    const value = label.trim();
-    const slug = collectionSlug(value);
-    if (!slug) return;
-    // A typed string that normalizes onto a collection we already know adopts
-    // that collection's own spelling, so "campus maps" cannot fork "Campus Maps".
-    const known = vocabulary.find((entry) => entry.slug === slug);
-    setDraft((prev) =>
-      prev.some((name) => collectionSlug(name) === slug) ? prev : [...prev, known ? known.label : value],
-    );
+    if (!collectionSlug(label)) return;
+    setDraft((prev) => withCollection(prev, label));
     setQuery("");
     setActiveIndex(-1);
     setListOpen(true);
@@ -845,7 +838,9 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
     setSaving(true);
     setError(null);
     try {
-      await onSave(draft);
+      // pendingDraft, not draft — a name typed but not yet turned into a chip is
+      // still what the user asked for.
+      await onSave(pendingDraft);
       setEditing(false);
       setListOpen(false);
       setQuery("");
@@ -878,6 +873,7 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
       if (showList && highlighted >= 0) {
         addCollection(options[highlighted].label);
       } else if (query.trim()) {
+        // Creates it if it is new, joins it if it is not.
         addCollection(query);
       } else {
         handleSave();
@@ -986,7 +982,7 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
             autoFocus
             disabled={saving}
             autoComplete="off"
-            placeholder={draft.length ? "Add another collection…" : "Search or create a collection…"}
+            placeholder={draft.length ? "Add another…" : "Type a name, then press Enter"}
             role="combobox"
             aria-label="Collections"
             aria-autocomplete="list"
@@ -1005,7 +1001,7 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
             <ul id={listboxId} role="listbox" aria-label="Collections" className="collections-listbox">
               {options.map((option, index) => (
                 <li
-                  key={option.key}
+                  key={option.slug}
                   id={optionId(index)}
                   role="option"
                   aria-selected={index === highlighted}
@@ -1016,18 +1012,9 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
                   onMouseEnter={() => setActiveIndex(index)}
                   onClick={() => addCollection(option.label)}
                 >
-                  {option.kind === "create" ? (
-                    <>
-                      <PlusIcon />
-                      <span>Create “{option.label}”</span>
-                    </>
-                  ) : (
-                    <>
-                      <span className="collections-option__label">{option.label}</span>
-                      {typeof option.itemCount === "number" && (
-                        <span className="collections-option__count">{option.itemCount}</span>
-                      )}
-                    </>
+                  <span className="collections-option__label">{option.label}</span>
+                  {typeof option.itemCount === "number" && (
+                    <span className="collections-option__count">{option.itemCount}</span>
                   )}
                 </li>
               ))}

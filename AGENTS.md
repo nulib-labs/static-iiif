@@ -188,6 +188,15 @@ of ours; `isManagedPartOfEntry` matches on marker-or-path **and** requires the i
 to sit under our own base URL, which is what stops us claiming a collection
 belonging to another static-iiif deployment.
 
+`WorkCollectionsField` deliberately has **no "Create" row** in its suggestion
+list: Enter creates whatever is typed, and Check commits any text still sitting
+in the input before saving, so a name is never silently discarded for not having
+been turned into a chip first. Suggestions are existing collections only, and
+only an explicit arrow-key or pointer selection highlights one — Enter otherwise
+uses exactly what was typed, so the result never depends on invisible state.
+Typing a name that normalizes onto an existing collection joins it rather than
+forking it, which is what makes plain-Enter safe.
+
 The works list carries a **Collection** column whose header is its own filter
 (`CollectionFilterHeader`). Filter options are derived from the loaded works, not
 from the collections vocabulary, so the menu can never offer something that
