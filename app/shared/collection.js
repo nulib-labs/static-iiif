@@ -456,6 +456,7 @@ function planReconciliation({baseUrl, member, removed = false, desired, root, le
   return {leafWrites, leafDeletes, rootNext, rootChanged, collections};
 }
 
+
 function manifestThumbnail(manifest) {
   if (Array.isArray(manifest?.thumbnail) && manifest.thumbnail.length) return manifest.thumbnail;
   const canvasThumbnail = manifest?.items?.[0]?.thumbnail;

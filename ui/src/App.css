@@ -441,23 +441,28 @@ main.layout {
   margin: -2px -6px;
 }
 
-/* The collections caption under the work title, and its editor. The resting
-   value reuses .canvas-label-editable so click-to-edit looks identical to every
-   other editable field. That class sets align-self: flex-start, which beats the
-   parent's align-items: center — overridden below with a two-class selector so,
-   unlike .work-title-editable above, this does not depend on source order. */
+/* The collections field in the Linking panel. The resting value reuses
+   .canvas-label-editable so click-to-edit looks identical to every other
+   editable field; that class's align-self: flex-start is what we want here, so
+   unlike the centred page heading this needs no override. */
 .work-collections {
-  align-self: center;
   max-width: 44rem;
-}
-
-.work-collections .canvas-label-editable {
-  align-self: center;
-  text-align: center;
 }
 
 .work-collections-editor {
   width: min(28rem, 100%);
+}
+
+/* Brief confirmation after a save: the round trip is short enough that the
+   spinner alone can read as "nothing happened". */
+.collections-saved {
+  animation: collections-saved-fade 2.5s ease forwards;
+}
+
+@keyframes collections-saved-fade {
+  0% { opacity: 0; }
+  10%, 70% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 /* Badge already supplies the fill, radius, padding and gap; the chip only needs

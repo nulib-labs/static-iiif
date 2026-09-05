@@ -710,19 +710,6 @@ function collectionSlug(value) {
     .replace(/^-+|-+$/g, "");
 }
 
-const MANAGED_COLLECTION_FLAG = "staticiiif:managed";
-
-// An imported manifest arrives with its own `partOf` pointing at the source
-// institution's collection. The server preserves those, but they are not ours to
-// show or send back — read only the entries it marks as managed.
-function readManagedCollections(manifest) {
-  const entries = Array.isArray(manifest?.partOf) ? manifest.partOf : [];
-  return entries
-    .filter((entry) => entry?.[MANAGED_COLLECTION_FLAG] === true)
-    .map((entry) => readLanguageMap(entry.label)[0] || "")
-    .filter(Boolean);
-}
-
 // Collection membership, edited from the work's own page. Radix Themes has no
 // combobox, and the two primitives that look close — DropdownMenu and Popover —
 // both move focus into the popup, which makes typing impossible. So the
@@ -737,6 +724,7 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
   const [listOpen, setListOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [savedAt, setSavedAt] = useState(0);
 
   const baseId = useId();
   const listboxId = `${baseId}-listbox`;
@@ -748,6 +736,13 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
   useEffect(() => {
     if (!editing) setDraft(savedCollections);
   }, [savedCollections, editing]);
+
+  // setState from a timer, not synchronously in the effect body.
+  useEffect(() => {
+    if (!savedAt) return undefined;
+    const timer = setTimeout(() => setSavedAt(0), 2500);
+    return () => clearTimeout(timer);
+  }, [savedAt]);
 
   // Suggestions are existing collections only — there is no "Create" row, because
   // Enter (or Check) already creates whatever is typed. Offering both a row and a
@@ -800,6 +795,7 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
   const isDirty = sortedSlugs(savedCollections) !== sortedSlugs(pendingDraft);
 
   const startEditing = () => {
+    setSavedAt(0);
     setDraft(savedCollections);
     setQuery("");
     setActiveIndex(-1);
@@ -844,6 +840,9 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
       setEditing(false);
       setListOpen(false);
       setQuery("");
+      // The round trip is short enough that the spinner can come and go before
+      // it registers, which reads as "nothing happened". Say so explicitly.
+      setSavedAt(Date.now());
     } catch (err) {
       // InlineTextEditor's contract: show the message, keep the editor open, and
       // leave the draft intact so nothing the user typed is lost.
@@ -917,18 +916,14 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
   if (!editing) {
     const display = savedCollections.length ? savedCollections.join(", ") : "None";
     return (
-      <Flex align="center" justify="center" gap="2" wrap="wrap" className="work-collections">
-        <Text as="span" size="2" color="gray">
-          Collections
-        </Text>
+      <Flex align="center" gap="2" wrap="wrap" className="work-collections">
         <Text
           as="span"
-          size="2"
-          weight="medium"
+          size="3"
           color={savedCollections.length ? undefined : "gray"}
           role="button"
           tabIndex={0}
-          aria-label={`Collections: ${display}`}
+          aria-label={`Collections: ${display}. Click to edit.`}
           className="canvas-label-editable"
           onClick={startEditing}
           onKeyDown={(event) => {
@@ -940,6 +935,11 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
         >
           {display}
         </Text>
+        {savedAt > 0 && (
+          <Text as="span" size="1" color="green" className="collections-saved">
+            Saved
+          </Text>
+        )}
       </Flex>
     );
   }
@@ -952,7 +952,7 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
       onBlur={handleBlur}
     >
       {draft.length > 0 && (
-        <Flex wrap="wrap" justify="center" gap="1">
+        <Flex wrap="wrap" gap="1">
           {draft.map((name) => (
             <Badge key={name} size="2" variant="soft" radius="full" className="collection-chip">
               {name}
@@ -1200,6 +1200,25 @@ function ManifestMetadataPanel({manifest, onSaveSummary, onSaveMetadata}) {
           </Box>
         </Box>
       </Flex>
+    </Flex>
+  );
+}
+
+// Relationships to other IIIF resources. Collections today; this is where a
+// future "part of / see also" style link would live too.
+function ManifestLinkingPanel({savedCollections, vocabulary, onSaveCollections}) {
+  return (
+    <Flex direction="column" className="metadata-fields">
+      <Box>
+        <Text as="p" size="2" color="gray" mb="1">
+          Collections
+        </Text>
+        <WorkCollectionsField
+          savedCollections={savedCollections}
+          vocabulary={vocabulary}
+          onSave={onSaveCollections}
+        />
+      </Box>
     </Flex>
   );
 }
@@ -1848,10 +1867,16 @@ function WorkDetailPanel({
     () => (manifestObject ? structuredClone(manifestObject) : null),
     [manifestObject],
   );
-  // Memoized for the same reason viewerContent is: a fresh array every render
-  // would make WorkCollectionsField's prop-resync effect fire on every render
-  // and setState with a never-equal value. Never compute this inline.
-  const savedCollections = useMemo(() => readManagedCollections(manifestObject), [manifestObject]);
+  // The API resolves this for us (managed partOf entries only), so the client
+  // never re-parses partOf and the save response does not need to ship a whole
+  // manifest back just to report membership. Memoized for the same reason
+  // viewerContent is: a fresh array every render would make the field's
+  // prop-resync effect fire every render and setState a never-equal value.
+  const collectionLabels = manifestDetail?.collections;
+  const savedCollections = useMemo(
+    () => (collectionLabels || []).map((entry) => entry.label),
+    [collectionLabels],
+  );
 
   const handleResumeClick = () => {
     setResumeError(null);
@@ -1869,29 +1894,19 @@ function WorkDetailPanel({
               <ArrowUpIcon /> View all Works
             </RouterLink>
           </Button>
-          {/* Title and collections are one unit — the collections line is a
-              caption on the heading, not a section of its own — so they share a
-              tight gap and the page's gap-7 rhythm applies to the pair. */}
-          <Flex direction="column" align="center" gap="3" className="work-heading">
-            {/* The work title is edited here rather than in the Metadata tab —
-                it is the page's own heading. Its size lives in CSS because the
-                requested 2x of the old size-6 falls between Radix's steps. */}
-            <InlineTextEditor
-              as="h1"
-              value={manifestDetail.label || ""}
-              onSave={onSaveTitle}
-              placeholder={manifestDetail.identifier}
-              ariaLabel="Save title"
-              textProps={{weight: "bold"}}
-              fieldSize="3"
-              className="work-title-editable"
-            />
-            <WorkCollectionsField
-              savedCollections={savedCollections}
-              vocabulary={collections}
-              onSave={onSaveCollections}
-            />
-          </Flex>
+          {/* The work title is edited here rather than in the Metadata tab —
+              it is the page's own heading. Its size lives in CSS because the
+              requested 2x of the old size-6 falls between Radix's steps. */}
+          <InlineTextEditor
+            as="h1"
+            value={manifestDetail.label || ""}
+            onSave={onSaveTitle}
+            placeholder={manifestDetail.identifier}
+            ariaLabel="Save title"
+            textProps={{weight: "bold"}}
+            fieldSize="3"
+            className="work-title-editable"
+          />
         </Flex>
       )}
       {(isFailed || isStale) && (
@@ -1942,6 +1957,7 @@ function WorkDetailPanel({
           <SegmentedControl.Item value="assets">Assets</SegmentedControl.Item>
           <SegmentedControl.Item value="metadata">Metadata</SegmentedControl.Item>
           <SegmentedControl.Item value="layout">Layout</SegmentedControl.Item>
+          <SegmentedControl.Item value="linking">Linking</SegmentedControl.Item>
         </SegmentedControl.Root>
         <DropdownMenu.Root>
           <DropdownMenu.Trigger disabled={!manifestDetail}>
@@ -1984,6 +2000,12 @@ function WorkDetailPanel({
               manifest={manifestDetail.manifest}
               onSaveSummary={onSaveSummary}
               onSaveMetadata={onSaveMetadata}
+            />
+          ) : section === "linking" ? (
+            <ManifestLinkingPanel
+              savedCollections={savedCollections}
+              vocabulary={collections}
+              onSaveCollections={onSaveCollections}
             />
           ) : (
             <ManifestLayoutPanel
@@ -2355,13 +2377,26 @@ export default function App({ signOut }) {
         body: {collections: labels},
         errorMessage: "Unable to save collections",
       });
-      setManifestDetail(data.manifest);
+      const next = data.work?.collections ?? [];
+      // Merge rather than replace: the response no longer carries the manifest,
+      // and nothing else about the work changed.
+      setManifestDetail((prev) =>
+        prev && prev.identifier === selectedManifestId ? {...prev, collections: next} : prev,
+      );
+      // Without this the works list keeps showing the old value in its
+      // Collection column until something else refetches — which is what made a
+      // save look like it had not happened.
+      setManifests((prev) =>
+        prev.map((manifest) =>
+          manifest.identifier === selectedManifestId ? {...manifest, collections: next} : manifest,
+        ),
+      );
       // The vocabulary comes back with the write, so there is no follow-up GET
       // to race against our own save.
       if (Array.isArray(data.collections)) {
         setCollections(data.collections);
       }
-      return data.manifest;
+      return next;
     },
     [manifestApiUrl, selectedManifestId],
   );

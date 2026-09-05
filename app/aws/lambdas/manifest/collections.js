@@ -113,15 +113,18 @@ async function ensureRoot() {
 // keeps `root ⊆ existing leaf documents` true at every intermediate state, so a
 // crash can never leave the root advertising a collection that 404s.
 async function applyReconciliation(plan) {
-  for (const write of plan.leafWrites) {
-    await writeJson(write.key, write.document);
-  }
+  // Between phases the order is the invariant — leaves, then root, then
+  // deletions, so the root never advertises a document that 404s. Within a
+  // phase the objects are independent, so they go in parallel.
+  await Promise.all(plan.leafWrites.map((write) => writeJson(write.key, write.document)));
   if (plan.rootChanged) {
     await writeJson(rootCollectionKey(), plan.rootNext);
   }
-  for (const removal of plan.leafDeletes) {
-    await s3.send(new DeleteObjectCommand({Bucket: bucket, Key: removal.key}));
-  }
+  await Promise.all(
+    plan.leafDeletes.map((removal) =>
+      s3.send(new DeleteObjectCommand({Bucket: bucket, Key: removal.key})),
+    ),
+  );
   return {written: plan.leafWrites.length, deleted: plan.leafDeletes.length};
 }
 
@@ -224,7 +227,6 @@ async function handleManifestCollectionsRoute({
   event,
   readManifest,
   writeManifest,
-  manifestDetail,
 }) {
   if (method !== "PUT") {
     return jsonResponse(405, {error: "Method not allowed"});
@@ -241,22 +243,26 @@ async function handleManifestCollectionsRoute({
   }
 
   try {
+    // Independent reads, so they go together rather than in series.
+    const [importStatus, manifest, root] = await Promise.all([
+      readImportStatus(identifier).catch(() => null),
+      readManifest(identifier),
+      ensureRoot(),
+    ]);
+
     // An import holds a stale copy of the manifest for minutes at a time and
     // writes it back wholesale, which would silently revert this edit.
-    const importStatus = await readImportStatus(identifier).catch(() => null);
     if (importStatus?.status === "in-progress") {
       return jsonResponse(409, {
         error: "This work is still importing — try again when it finishes",
       });
     }
 
-    const manifest = await readManifest(identifier);
     // Captured before the update: this is how the collections a work is LEAVING
     // stay in the reconciler's touched set.
     const previous = managedCollectionRefs(manifest?.partOf, {baseUrl});
     // Resolve names against the collections that already exist before writing,
     // so a work never caches a spelling its collection does not use.
-    const root = await ensureRoot();
     const canonical = canonicalizeCollectionLabels(desired, root);
     const next = applyCollections(manifest, {baseUrl, collections: canonical});
     await writeManifest(identifier, next);
@@ -268,7 +274,13 @@ async function handleManifestCollectionsRoute({
       root,
     });
     return jsonResponse(200, {
-      manifest: manifestDetail(identifier, next),
+      // Deliberately NOT the whole manifest: a 271-canvas work serializes to
+      // over a megabyte, and the only thing that changed is which collections
+      // it belongs to. The client patches what it already holds.
+      work: {
+        identifier,
+        collections: managedCollectionRefs(next.partOf, {baseUrl}),
+      },
       // The vocabulary comes back with the write, so the UI needs no follow-up
       // GET and can't race one against its own save.
       collections: collections || [],
@@ -284,7 +296,7 @@ async function handleManifestCollectionsRoute({
 }
 
 // GET /collections, POST /collections/reindex
-async function handleCollectionsRoute({method, segments, readManifest}) {
+async function handleCollectionsRoute({method, segments}) {
   if (segments.length === 1) {
     if (method !== "GET") {
       return jsonResponse(405, {error: "Method not allowed"});
@@ -307,7 +319,7 @@ async function handleCollectionsRoute({method, segments, readManifest}) {
       return jsonResponse(405, {error: "Method not allowed"});
     }
     try {
-      return jsonResponse(200, await reindexCollections({readManifest}));
+      return jsonResponse(200, await reindexCollections());
     } catch (error) {
       console.error("Reindex collections failed", error);
       return jsonResponse(500, {error: error.message});
@@ -323,28 +335,29 @@ async function handleCollectionsRoute({method, segments, readManifest}) {
 // This is the repair story that makes manifest-authoritative safe: every
 // collection document is a pure function of the manifests, so partial writes,
 // hand-edits and base-URL changes are all fixed by one button.
-async function reindexCollections({readManifest}) {
+async function reindexCollections() {
   const startedAt = Date.now();
   const summaries = await listManifestSummaries({s3, bucket});
 
+  // One pass. listManifestSummaries has already read every manifest, and the
+  // summary carries partOf and thumbnail, so re-reading the corpus here would
+  // double the IO of the most expensive endpoint in the app for nothing.
   const bySlug = new Map();
   for (const summary of summaries) {
-    const manifest = await readManifest(summary.identifier).catch(() => null);
-    if (!manifest) continue;
-    for (const ref of managedCollectionRefs(manifest.partOf, {baseUrl})) {
+    for (const ref of managedCollectionRefs(summary.partOf, {baseUrl})) {
       if (!bySlug.has(ref.slug)) bySlug.set(ref.slug, {labels: [], members: []});
       const group = bySlug.get(ref.slug);
       group.labels.push({identifier: summary.identifier, label: ref.label});
       group.members.push({
-        manifestId: manifest.id,
+        manifestId: summary.manifestUrl,
         label: summary.label,
-        thumbnail: manifestThumbnail(manifest),
+        thumbnail: summary.thumbnail,
       });
     }
   }
 
   const collections = [];
-  let written = 0;
+  const documents = [];
   for (const [slug, group] of bySlug) {
     // Deterministic canonical label: the earliest member by identifier names it.
     const [canonical] = [...group.labels].sort((a, b) => a.identifier.localeCompare(b.identifier));
@@ -358,8 +371,7 @@ async function reindexCollections({readManifest}) {
     );
 
     const document = buildCollectionDocument({baseUrl, slug, label, members});
-    await writeJson(collectionObjectKey(slug), document);
-    written += 1;
+    documents.push({slug, document});
     collections.push({
       slug,
       label,
@@ -367,6 +379,9 @@ async function reindexCollections({readManifest}) {
       itemCount: members.length,
     });
   }
+
+  await Promise.all(documents.map(({slug, document}) => writeJson(collectionObjectKey(slug), document)));
+  const written = documents.length;
 
   collections.sort((a, b) => a.label.localeCompare(b.label) || a.slug.localeCompare(b.slug));
   await writeJson(rootCollectionKey(), buildRootCollectionDocument({baseUrl, collections}));

@@ -1,6 +1,9 @@
 const {GetObjectCommand, ListObjectsV2Command} = require("@aws-sdk/client-s3");
 // Re-exported below so existing importers keep working.
 const {extractLabel} = require("./language");
+// One-way: collection.js depends on nothing but ./language, so requiring it
+// here is safe and keeps a single definition of the thumbnail rule.
+const {manifestThumbnail} = require("./collection");
 
 const MANIFEST_PREFIX = "presentation/manifest";
 const MANIFEST_OBJECT = "manifest.json";
@@ -103,6 +106,9 @@ function manifestSummary(identifier, manifest) {
     itemCount: items.length,
     thumbnails: items.map(canvasThumbnailService).filter(Boolean),
     partOf: partOfRefs(manifest),
+    // Carried on the summary so reindex can rebuild every collection document
+    // from one pass over the corpus instead of re-reading each manifest.
+    thumbnail: manifestThumbnail(manifest),
   };
 }
 

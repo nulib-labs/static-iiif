@@ -270,7 +270,7 @@ exports.handler = async (event) => {
   }
 
   if (segments[0] === "collections") {
-    return handleCollectionsRoute({ method, segments, readManifest });
+    return handleCollectionsRoute({ method, segments });
   }
 
   if (segments[0] !== "manifests") {
@@ -477,7 +477,6 @@ exports.handler = async (event) => {
       event,
       readManifest,
       writeManifest,
-      manifestDetail,
     });
   }
 
