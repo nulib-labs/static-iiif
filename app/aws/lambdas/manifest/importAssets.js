@@ -22,6 +22,15 @@ const imageApiBase = (process.env.IMAGE_API_BASE_URL || "").replace(/\/$/, "");
 const MAX_CANVAS_INDEX = 1000; // sanity valve against a runaway self-invoke chain
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 280000;
+// Canvases copied concurrently per invocation. Ten because the slow part of a
+// canvas is waiting on the pyramid conversion, which is another Lambda doing the
+// work — so ten wait together instead of end to end. It also cuts the number of
+// links in the self-invoke chain (and of whole-manifest writes) by 10x, and a
+// broken link is what strands an import at "in-progress" forever.
+const IMPORT_CHUNK_SIZE = 10;
+// Stop starting new chunks after this much elapsed time, leaving room inside the
+// 900s timeout for one worst-case chunk (a conversion poll can take POLL_TIMEOUT_MS).
+const CHUNK_BUDGET_MS = 600000;
 
 function importStatusKey(identifier) {
   return `${MANIFEST_PREFIX}/${identifier}/import-status.json`;
@@ -260,16 +269,12 @@ function repointManifestThumbnail(manifest) {
   return true;
 }
 
-async function copyCanvasAsset({identifier, canvasIndex, total, canvas, failures = []}) {
-  const reportPhase = (phase) =>
-    writeImportStatus(identifier, {
-      status: "in-progress",
-      total,
-      completed: canvasIndex,
-      currentIndex: canvasIndex,
-      failures,
-      phase,
-    });
+async function copyCanvasAsset({identifier, canvasIndex, canvas, onPhase}) {
+  // The caller owns the status object: with a chunk of canvases in flight at
+  // once, each writing its own progress would make them trample each other.
+  const reportPhase = async (phase) => {
+    if (onPhase) await onPhase(phase);
+  };
 
   const body = paintingBody(canvas);
   const serviceId = body?.service?.[0]?.id;
@@ -374,59 +379,129 @@ async function handleImportAssets({identifier, canvasIndex}) {
   const failures = Array.isArray(previousStatus?.failures) ? previousStatus.failures : [];
 
   const items = Array.isArray(manifest.items) ? manifest.items : [];
-  if (canvasIndex >= items.length) {
+
+  // Keep taking chunks inside this one invocation until the work is done or the
+  // time budget runs out.
+  //
+  // This matters for more than speed. Lambda's recursive-loop detection
+  // TERMINATES a self-invoke chain after ~16 hops — silently, with nothing in
+  // the logs — which is what kept stranding large imports at "in-progress"
+  // forever. Looping here means a 271-canvas work needs one invocation instead
+  // of 28 hops, and the handoff below becomes a rare event rather than the
+  // normal path.
+  const startedAt = Date.now();
+  let index = Math.max(0, canvasIndex);
+
+  while (index < items.length && Date.now() - startedAt < CHUNK_BUDGET_MS) {
+    const chunkEnd = Math.min(index + IMPORT_CHUNK_SIZE, items.length);
+    const chunkStart = index;
+    const chunk = [];
+    for (let i = chunkStart; i < chunkEnd; i += 1) chunk.push(i);
+
+    // Distinct canvas indices touch distinct array elements, so the shared
+    // manifest is safe to mutate in parallel; only the status object needs
+    // coordinating, and this function owns that.
+    let finished = 0;
+    const phases = new Map();
+    const reportProgress = () =>
+      writeImportStatus(identifier, {
+        status: "in-progress",
+        total: items.length,
+        completed: chunkStart + finished,
+        currentIndex: chunkStart + finished,
+        failures,
+        phase:
+          chunk.length === 1
+            ? phases.get(chunkStart) || null
+            : // With several in flight a single phase string would be a lie, so
+              // report the span and let the counts carry the detail.
+              `Copying ${chunkStart + 1}–${chunkEnd} of ${items.length} (${chunk.length - finished} in progress)…`,
+      });
+
+    await reportProgress();
+    await Promise.all(
+      chunk.map(async (i) => {
+        try {
+          await copyCanvasAsset({
+            identifier,
+            canvasIndex: i,
+            canvas: items[i],
+            onPhase: (phase) => {
+              phases.set(i, phase);
+              return chunk.length === 1 ? reportProgress() : undefined;
+            },
+          });
+        } catch (error) {
+          console.error(`Import-assets: canvas ${i} of ${identifier} failed`, error);
+          failures.push({canvasIndex: i, error: error.message});
+        } finally {
+          finished += 1;
+          await reportProgress().catch(() => {});
+        }
+      }),
+    );
+
+    // Once per chunk rather than once per canvas: this manifest can be over a
+    // megabyte, so ten writes become one.
+    await writeManifestItems(identifier, manifest);
+    index = chunkEnd;
     await writeImportStatus(identifier, {
       status: "in-progress",
       total: items.length,
-      completed: items.length,
-      currentIndex: items.length,
+      completed: index,
+      currentIndex: index,
       failures,
-      phase: "Updating manifest thumbnail…",
+      phase: null,
     });
-    if (repointManifestThumbnail(manifest)) {
-      await writeManifestItems(identifier, manifest);
-    }
-    // A canvas that failed to copy still points at the source, so the import is
-    // not "complete" just because the chain reached the end.
-    await writeImportStatus(identifier, {
-      status: failures.length ? "failed" : "complete",
-      total: items.length,
-      completed: items.length,
-      failures,
-      error: failures.length
-        ? `${failures.length} of ${items.length} image${failures.length === 1 ? "" : "s"} could not be copied`
-        : undefined,
-    });
-    console.log(
-      `Import-assets: finished ${identifier} with ${failures.length} failure(s) of ${items.length}`,
-    );
-    return;
   }
 
-  try {
-    await copyCanvasAsset({
-      identifier,
-      canvasIndex,
-      total: items.length,
-      canvas: items[canvasIndex],
-      failures,
-    });
-    await writeManifestItems(identifier, manifest);
-  } catch (error) {
-    console.error(`Import-assets: canvas ${canvasIndex} of ${identifier} failed`, error);
-    failures.push({canvasIndex, error: error.message});
+  if (index < items.length) {
+    // Out of budget with work left: hand the rest to a fresh invocation.
+    try {
+      await invokeSelf({action: "importAssets", identifier, canvasIndex: index});
+    } catch (error) {
+      // A dropped handoff is what strands an import at "in-progress" with
+      // nothing logged. Say so, and leave a status the UI's stale check
+      // surfaces with a Resume button.
+      console.error(`Import-assets: could not schedule chunk at ${index} for ${identifier}`, error);
+      await writeImportStatus(identifier, {
+        status: "in-progress",
+        total: items.length,
+        completed: index,
+        currentIndex: index,
+        failures,
+        phase: null,
+        error: "Import was interrupted — resume to continue.",
+      });
+    }
+    return;
   }
 
   await writeImportStatus(identifier, {
     status: "in-progress",
     total: items.length,
-    completed: canvasIndex + 1,
-    currentIndex: canvasIndex + 1,
+    completed: items.length,
+    currentIndex: items.length,
     failures,
-    phase: null,
+    phase: "Updating manifest thumbnail…",
   });
-
-  await invokeSelf({action: "importAssets", identifier, canvasIndex: canvasIndex + 1});
+  if (repointManifestThumbnail(manifest)) {
+    await writeManifestItems(identifier, manifest);
+  }
+  // A canvas that failed to copy still points at the source, so the import is
+  // not "complete" just because the walk reached the end.
+  await writeImportStatus(identifier, {
+    status: failures.length ? "failed" : "complete",
+    total: items.length,
+    completed: items.length,
+    failures,
+    error: failures.length
+      ? `${failures.length} of ${items.length} image${failures.length === 1 ? "" : "s"} could not be copied`
+      : undefined,
+  });
+  console.log(
+    `Import-assets: finished ${identifier} with ${failures.length} failure(s) of ${items.length}`,
+  );
 }
 
 module.exports = {

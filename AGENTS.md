@@ -144,6 +144,44 @@ aws cognito-idp admin-set-user-password \
 ### Amplify deployment
 Connect the repo in Amplify (this is Amplify **Hosting** only — auth/storage/API are all defined via SAM, not the Amplify backend framework). The inline `BuildSpec` in `template.yml`'s `AmplifyApp` resource handles the build (`ui/` subdirectory, outputs `ui/dist`) and injects the `VITE_*` environment variables from the stack's own resources automatically.
 
+## Asset import
+
+`triggerAssetImport` kicks off a walk over the manifest's canvases
+(`app/aws/lambdas/manifest/importAssets.js`). Each canvas is downloaded from the
+source Image API, uploaded to the source bucket, waited on until the `iiif-image`
+Lambda has produced its pyramid TIFF, then repointed at our own Image API.
+Progress lives in `presentation/manifest/{id}/import-status.json`, which is what
+the UI polls and what `POST /manifests/{id}/import-resume` rewinds.
+
+Two things about the shape of that walk, both learned the hard way:
+
+**Canvases are copied `IMPORT_CHUNK_SIZE` (10) at a time.** The slow part of a
+canvas is waiting on the conversion, which another Lambda is doing — so ten wait
+together rather than end to end. It also means one whole-manifest write per
+chunk instead of per canvas, which matters because a 271-canvas manifest is over
+a megabyte.
+
+**The walk loops inside a single invocation** (`CHUNK_BUDGET_MS`, 10 minutes of
+the 15-minute timeout) and only hands off to a fresh invocation when it runs out
+of budget. This is not just a speed choice:
+
+> **Lambda's recursive-loop detection terminates a self-invoke chain after ~16
+> hops.** It does so *silently* — no error, no log line, no failure destination.
+> The import simply stops and the status object is stranded at `in-progress`
+> forever. This is what repeatedly stalled large imports, and it is invisible
+> unless you check the `RecursiveInvocationsDropped` CloudWatch metric.
+
+Two defences, and both are needed: looping means a 271-canvas work takes **one**
+invocation rather than 28 hops, and `RecursiveLoop: Allow` on `ManifestFunction`
+in `template.yml` opts the function out of the protection for the rare handoff a
+genuinely huge work still needs. The walk is bounded by `MAX_CANVAS_INDEX` and
+advances monotonically, so opting out is safe — that setting exists for exactly
+this case. **Don't remove it**, and if imports start stalling silently again,
+check that metric first.
+
+A failed handoff now writes an `error` into the status object so the UI's
+staleness check surfaces a Resume button instead of the import looking alive.
+
 ## Collections
 
 A work can belong to zero or more Collections, edited from the work's own page

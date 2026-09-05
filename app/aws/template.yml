@@ -237,6 +237,13 @@ Resources:
           - "@aws-sdk/*"
     Properties:
       FunctionName: !Sub "${AWS::StackName}-manifest-api"
+      # The import walk hands off to itself when a very large work outruns one
+      # invocation's time budget. Lambda's recursive-loop detection treats that
+      # as a runaway and TERMINATES the chain after ~16 hops — silently, with
+      # nothing in the logs — which stranded large imports at "in-progress".
+      # The walk is bounded (MAX_CANVAS_INDEX) and advances monotonically, so
+      # opting out is safe and is exactly what this setting is for.
+      RecursiveLoop: Allow
       CodeUri: ../
       Handler: index.handler
       Timeout: 900
