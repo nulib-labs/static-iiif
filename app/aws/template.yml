@@ -349,6 +349,24 @@ Resources:
             ApiId: !Ref ManifestHttpApi
             Path: /manifests/{id}/items
             Method: PUT
+        UpdateManifestCollections:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/{id}/collections
+            Method: PUT
+        ListCollections:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections
+            Method: GET
+        ReindexCollections:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/reindex
+            Method: POST
 
   SearchFunction:
     Type: AWS::Serverless::Function
@@ -467,6 +485,8 @@ Resources:
           Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/manifests"
         - Name: VITE_SEARCH_API_URL
           Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/search"
+        - Name: VITE_COLLECTION_API_URL
+          Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/collections"
         - Name: VITE_STORAGE_BUCKET
           Value: !Sub "${AWS::StackName}-iiif"
         - Name: VITE_SOURCE_BUCKET

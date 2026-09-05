@@ -1,4 +1,6 @@
 const {GetObjectCommand, ListObjectsV2Command} = require("@aws-sdk/client-s3");
+// Re-exported below so existing importers keep working.
+const {extractLabel} = require("./language");
 
 const MANIFEST_PREFIX = "presentation/manifest";
 const MANIFEST_OBJECT = "manifest.json";
@@ -43,22 +45,6 @@ function createManifestTemplate({baseUrl, identifier, label}) {
   };
 }
 
-function extractLabel(labelValue) {
-  if (typeof labelValue === "string") {
-    return labelValue;
-  }
-  if (Array.isArray(labelValue)) {
-    return labelValue.find((entry) => typeof entry === "string") || "";
-  }
-  if (labelValue && typeof labelValue === "object") {
-    const candidates = labelValue.none || Object.values(labelValue)[0];
-    if (Array.isArray(candidates)) {
-      return candidates.find((entry) => typeof entry === "string") || "";
-    }
-  }
-  return "";
-}
-
 async function streamToString(body) {
   if (typeof body === "string") return body;
   if (body && typeof body.transformToString === "function") {
@@ -90,6 +76,22 @@ function canvasThumbnailService(canvas) {
   return service?.id || null;
 }
 
+// A projection, not the raw array: an imported manifest's partOf carries the
+// source institution's summary, which can run to a paragraph, and GET /manifests
+// returns every manifest in one response under a 6MB cap. id/type/label plus any
+// prefixed extension terms is all a caller needs. The generic ":" test keeps this
+// module free of any collection import.
+function partOfRefs(manifest) {
+  const entries = Array.isArray(manifest?.partOf) ? manifest.partOf : [];
+  return entries.filter(Boolean).map((entry) => {
+    const ref = {id: entry.id, type: entry.type, label: entry.label};
+    for (const key of Object.keys(entry)) {
+      if (key.includes(":")) ref[key] = entry[key];
+    }
+    return ref;
+  });
+}
+
 function manifestSummary(identifier, manifest) {
   const label = extractLabel(manifest?.label);
   const items = Array.isArray(manifest?.items) ? manifest.items : [];
@@ -100,6 +102,7 @@ function manifestSummary(identifier, manifest) {
     relativePath: manifestObjectKey(identifier),
     itemCount: items.length,
     thumbnails: items.map(canvasThumbnailService).filter(Boolean),
+    partOf: partOfRefs(manifest),
   };
 }
 
@@ -148,5 +151,6 @@ module.exports = {
   readManifest,
   canvasThumbnailService,
   manifestSummary,
+  partOfRefs,
   listManifestSummaries,
 };

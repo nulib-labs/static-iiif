@@ -42,6 +42,30 @@ async function writeManifest(identifier, manifest) {
   );
 }
 
+// This function holds a manifest in memory for minutes at a time — copyCanvasAsset
+// polls up to POLL_TIMEOUT_MS per canvas waiting for the pyramid TIFF — and a
+// blind write-back would silently revert anything a curator changed meanwhile
+// (a title, a description, collection membership). Re-read immediately before
+// writing and carry over only the fields this chain actually owns.
+//
+// Still not atomic, but the window shrinks from minutes to one S3 round-trip.
+// The principled fix is a conditional write on the ETag, which belongs in its
+// own change because it touches every writer.
+async function writeManifestItems(identifier, manifest) {
+  let current;
+  try {
+    current = await readManifest(identifier);
+  } catch (error) {
+    console.error(`Import-assets: could not re-read manifest ${identifier} before write`, error);
+    current = manifest;
+  }
+  current.items = manifest.items;
+  if (manifest.thumbnail) {
+    current.thumbnail = manifest.thumbnail;
+  }
+  await writeManifest(identifier, current);
+}
+
 async function writeImportStatus(identifier, status) {
   await s3.send(
     new PutObjectCommand({
@@ -360,7 +384,7 @@ async function handleImportAssets({identifier, canvasIndex}) {
       phase: "Updating manifest thumbnail…",
     });
     if (repointManifestThumbnail(manifest)) {
-      await writeManifest(identifier, manifest);
+      await writeManifestItems(identifier, manifest);
     }
     // A canvas that failed to copy still points at the source, so the import is
     // not "complete" just because the chain reached the end.
@@ -387,7 +411,7 @@ async function handleImportAssets({identifier, canvasIndex}) {
       canvas: items[canvasIndex],
       failures,
     });
-    await writeManifest(identifier, manifest);
+    await writeManifestItems(identifier, manifest);
   } catch (error) {
     console.error(`Import-assets: canvas ${canvasIndex} of ${identifier} failed`, error);
     failures.push({canvasIndex, error: error.message});

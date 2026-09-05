@@ -19,6 +19,16 @@ const {
   listManifestSummaries: listManifestSummariesShared,
 } = require("../../../shared/manifest");
 const {
+  managedCollectionRefs,
+  stripForeignManagedEntries,
+} = require("../../../shared/collection");
+const {jsonResponse, parseBody, isNotFound} = require("./http");
+const {
+  handleCollectionsRoute,
+  handleManifestCollectionsRoute,
+  reconcileQuietly,
+} = require("./collections");
+const {
   triggerAssetImport,
   handleImportAssets,
   readImportStatus,
@@ -113,11 +123,6 @@ const bucket = process.env.IIIF_BUCKET;
 const sourceBucket = process.env.SOURCE_BUCKET;
 const manifestBaseUrl = (process.env.IIIF_BASE_URL || "").replace(/\/$/, "");
 const imageApiBase = (process.env.IMAGE_API_BASE_URL || "").replace(/\/$/, "");
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-};
 const SOURCE_IMAGE_EXTENSIONS = ["jpg", "jpeg", "tif", "tiff", "png", "webp"];
 
 function keyFromImageServiceId(serviceId) {
@@ -177,27 +182,21 @@ async function deleteManifestAssets(identifier, manifest) {
   await Promise.all([deleteKeys(sourceBucket, extraSourceKeys), deleteKeys(bucket, extraIiifKeys)]);
 }
 
-function jsonResponse(statusCode, payload) {
-  return {
-    statusCode,
-    headers: {
-      "Content-Type": "application/json",
-      ...corsHeaders,
-    },
-    body: JSON.stringify(payload),
-  };
-}
-
 function manifestDetail(identifier, manifest) {
   return {
     ...manifestSummary(identifier, manifest),
+    // Derived from partOf rather than stored separately — the manifest is the
+    // authority on what it belongs to.
+    collections: managedCollectionRefs(manifest?.partOf, {baseUrl: manifestBaseUrl}),
     manifest,
   };
 }
 
 // Only these manifest-level fields may be written through the API. Everything
-// else — id, type, @context, items, thumbnail — is owned by the server, so a
-// request body can never reach them.
+// else — id, type, @context, items, thumbnail, partOf — is owned by the server,
+// so a
+// request body can never reach them. Collection membership lives in partOf and
+// has side effects on other objects, so it gets its own sub-resource route.
 const EDITABLE_MANIFEST_FIELDS = ["label", "summary", "metadata", "behavior"];
 
 // A IIIF language map: {"none": ["value", ...]} — every value an array of strings.
@@ -251,18 +250,6 @@ async function listManifestSummaries() {
   return listManifestSummariesShared({s3, bucket});
 }
 
-function parseBody(event) {
-  if (!event.body) return {};
-  const raw = event.isBase64Encoded
-    ? Buffer.from(event.body, "base64").toString("utf8")
-    : event.body;
-  try {
-    return JSON.parse(raw);
-  } catch (error) {
-    throw new Error("Invalid JSON payload");
-  }
-}
-
 exports.handler = async (event) => {
   if (event?.source === "lambda" && event?.detail?.requestContext?.condition) {
     return handleImportFailure(event.detail);
@@ -282,6 +269,10 @@ exports.handler = async (event) => {
     return jsonResponse(200, { ok: true });
   }
 
+  if (segments[0] === "collections") {
+    return handleCollectionsRoute({ method, segments, readManifest });
+  }
+
   if (segments[0] !== "manifests") {
     return jsonResponse(404, { error: "Not found" });
   }
@@ -289,7 +280,12 @@ exports.handler = async (event) => {
   if (segments.length === 1) {
     if (method === "GET") {
       try {
-        const manifests = await listManifestSummaries();
+        // partOf is the shared summary's internal detail; the API surface
+        // exposes the resolved collections instead.
+        const manifests = (await listManifestSummaries()).map(({partOf, ...summary}) => ({
+          ...summary,
+          collections: managedCollectionRefs(partOf, { baseUrl: manifestBaseUrl }),
+        }));
         return jsonResponse(200, { manifests });
       } catch (error) {
         console.error("List manifests failed", error);
@@ -350,10 +346,17 @@ exports.handler = async (event) => {
         return jsonResponse(400, { error: "A valid Manifest is required" });
       }
       const identifier = crypto.randomUUID();
-      const importedManifest = {
-        ...manifest,
-        id: buildManifestId(manifestBaseUrl, identifier),
-      };
+      // The source institution's own partOf is kept verbatim as provenance. Only
+      // entries claiming to be *ours* while pointing somewhere we don't own are
+      // dropped — that happens when importing from another static-iiif
+      // deployment, and keeping them would invent collections nobody asked for.
+      const importedManifest = stripForeignManagedEntries(
+        {
+          ...manifest,
+          id: buildManifestId(manifestBaseUrl, identifier),
+        },
+        {baseUrl: manifestBaseUrl},
+      );
       await writeManifest(identifier, importedManifest);
       try {
         await triggerAssetImport({identifier, total: importedManifest.items.length});
@@ -422,12 +425,19 @@ exports.handler = async (event) => {
           }
         }
         await writeManifest(identifier, manifest);
+        if (updates.includes("label")) {
+          // Collection documents cache each member's title. A stale one is
+          // visible to every downstream consumer of a public IIIF document, so
+          // refresh it here rather than waiting for the next reindex. Membership
+          // is unchanged, so this is usually reads and no writes.
+          await reconcileQuietly({ manifest });
+        }
         return jsonResponse(200, { manifest: manifestDetail(identifier, manifest) });
       } catch (error) {
         if (error.message === "Invalid JSON payload") {
           return jsonResponse(400, { error: error.message });
         }
-        if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
+        if (isNotFound(error)) {
           return jsonResponse(404, { error: "Manifest not found" });
         }
         console.error("Update manifest failed", error);
@@ -443,6 +453,10 @@ exports.handler = async (event) => {
         await s3
           .send(new DeleteObjectCommand({ Bucket: bucket, Key: `${MANIFEST_PREFIX}/${identifier}/import-status.json` }))
           .catch(() => {});
+        // Truth first (the manifest is gone), projection second. A failure here
+        // is logged, not surfaced: the delete itself succeeded, and a reindex
+        // repairs the leftovers.
+        await reconcileQuietly({ manifest, desired: [], removed: true });
         return jsonResponse(200, { deleted: true });
       } catch (error) {
         if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
@@ -454,6 +468,17 @@ exports.handler = async (event) => {
     }
 
     return jsonResponse(405, { error: "Method not allowed" });
+  }
+
+  if (segments.length === 3 && segments[2] === "collections") {
+    return handleManifestCollectionsRoute({
+      method,
+      identifier,
+      event,
+      readManifest,
+      writeManifest,
+      manifestDetail,
+    });
   }
 
   if (segments.length === 3 && segments[2] === "items") {

@@ -3,7 +3,7 @@
 ## Project Overview
 This project generates static IIIF Image 3.0 API resources and IIIF Presentation 3.0 manifests for a collection of images, deployed entirely on AWS. A SAM application (`app/aws/template.yml`) provisions a source S3 bucket and an output S3 bucket (`*-iiif`). An S3-triggered Lambda (`app/aws/lambdas/iiif-image/`) converts uploaded source images to pyramid TIFFs (Level 2) for use by `samvera/serverless-iiif` (a nested SAR application). A second Lambda (`app/aws/lambdas/manifest/`) exposes a CRUD API (behind API Gateway + Cognito auth) for managing IIIF Presentation 3.0 manifests. A third Lambda (`app/aws/lambdas/search/`) maintains a title search index for those manifests in an existing, shared AWS OpenSearch domain (not provisioned by this repo) — see "Search index" below. A React/Vite frontend (`ui/`) talks to all three, and is hosted via Amplify.
 
-The project metadata CSV → manifest generation flow described in earlier iterations is still a future goal; today the manifest API supports single-manifest CRUD only.
+The project metadata CSV → manifest generation flow described in earlier iterations is still a future goal; today the manifest API supports single-manifest CRUD plus the Collections routes described below.
 
 ## UI Structure
 The dashboard (`ui/src/App.jsx`) is organized into tabs:
@@ -136,12 +136,82 @@ aws cognito-idp admin-set-user-password \
 | `VITE_IIIF_BASE_URL` | e.g. `https://abc.cloudfront.net/iiif/2` — serverless-iiif endpoint; pre-populates the URL input. Copy from the `IiifServer` nested stack's endpoint output after `sam deploy`. |
 | `VITE_MANIFEST_API_URL` | The `ManifestHttpApi` endpoint from stack outputs. |
 | `VITE_SEARCH_API_URL` | The `ManifestHttpApi` endpoint's `/search` path. Empty (search UI hidden) unless the stack was deployed with `OpenSearchEndpoint` set. |
+| `VITE_COLLECTION_API_URL` | The `ManifestHttpApi` endpoint's `/collections` path. Needed as its own variable because `VITE_MANIFEST_API_URL` already ends in `/manifests`; the UI derives a fallback from it, but set this explicitly. **Every `VITE_*` must also be added to the `define` block in `ui/vite.config.js`** — Amplify injects them as process env vars, which Vite's own `.env` handling never sees, so a missing entry is `undefined` in production and fine in dev. |
 | `VITE_STORAGE_BUCKET` / `VITE_STORAGE_REGION` | The IIIF output S3 bucket and its region. `STORAGE_BUCKET` also configures Amplify's default `Storage.S3` bucket (used for Auth/Storage bootstrap). |
 | `VITE_SOURCE_BUCKET` | The source S3 bucket (uploads land here, under `image/`, and trigger the `iiif-image` Lambda). Used by the Assets tab's Storage Browser location. |
 | `VITE_STORAGE_IDENTITY_POOL_ID` / `VITE_COGNITO_USER_POOL_ID` / `VITE_COGNITO_CLIENT_ID` | Cognito identifiers from stack outputs, for the Amplify `Authenticator`. |
 
 ### Amplify deployment
 Connect the repo in Amplify (this is Amplify **Hosting** only — auth/storage/API are all defined via SAM, not the Amplify backend framework). The inline `BuildSpec` in `template.yml`'s `AmplifyApp` resource handles the build (`ui/` subdirectory, outputs `ui/dist`) and injects the `VITE_*` environment variables from the stack's own resources automatically.
+
+## Collections
+
+A work can belong to zero or more Collections, edited from the work's own page
+(`WorkCollectionsField` in `ui/src/App.jsx`). Collections are real IIIF
+Presentation 3.0 Collection documents in the IIIF bucket:
+
+| | Key |
+|---|---|
+| Leaf | `presentation/collection/{slug}/collection.json` |
+| Root | `presentation/collection/index/collection.json` |
+
+**Membership is authoritative in each manifest's `partOf`; the collection
+documents are a derived projection.** That is the load-bearing decision:
+
+- There is no registry anywhere in this app (`GET /manifests` is a live prefix
+  scan), and this keeps it that way.
+- "A collection with no members ceases to exist" falls out for free.
+- `POST /collections/reindex` is a *pure function of the manifest corpus*, so
+  any projection damage — a partial write, a hand-edit, a base-URL change — is
+  repaired by one call. Under the reverse design a lost object would be
+  unrecoverable data loss.
+
+The last point is a constraint, not just a property: **never add collection-level
+state that the manifests do not determine.** The moment a collection needs a
+curator-authored description, reindex would destroy it and this design needs
+replacing with real storage. For the same reason every derived value must be
+recomputable — "first member" for a borrowed thumbnail means *first after
+sorting by label then id*, not first added.
+
+Ids are slugs of the label ("Environmental Impact Statements" →
+`environmental-impact-statements`). **The slug is the identity**: two labels that
+reduce to the same slug are the same collection, which is what lets the
+autocomplete forgive case and punctuation. A consequence is that renaming a
+collection is impossible by construction. `index` is reserved and rejected.
+
+Our `partOf` entries are marked `"staticiiif:managed": true`, with the prefix
+defined in the manifest's `@context` array (extensions first, the presentation
+context **last**, per the spec). The namespace URI ends in `#` — without a
+gen-delim JSON-LD 1.1 will not expand the compact IRI. An imported manifest's
+own `partOf` (Northwestern's, say) is preserved verbatim and never shown as one
+of ours; `isManagedPartOfEntry` matches on marker-or-path **and** requires the id
+to sit under our own base URL, which is what stops us claiming a collection
+belonging to another static-iiif deployment.
+
+The works list carries a **Collection** column whose header is its own filter
+(`CollectionFilterHeader`). Filter options are derived from the loaded works, not
+from the collections vocabulary, so the menu can never offer something that
+matches nothing; a filter whose collection later disappears falls back to showing
+everything. When a filter empties the table the header still renders — otherwise
+the control vanishes with the rows and the filter cannot be undone. The search
+results table gets the same column by joining hits against the loaded works
+client-side: **do not add collections to the OpenSearch document**, which stays
+deliberately minimal.
+
+Routes: `GET /collections` (one GetObject; creates the root if absent),
+`PUT /manifests/{id}/collections` (sets the whole managed set), and
+`POST /collections/reindex` (full rebuild + prune). Reconciliation reads the
+**union** of current and desired slugs — never the diff, which would let a retry
+short-circuit after a partial failure — and writes leaves, then the root, then
+deletions, so the root never advertises a collection whose document 404s.
+Reconciliation failure returns 200 with `reconciliation.ok: false`: the
+authoritative write already succeeded, so reporting failure would be false in the
+direction that matters.
+
+`POST /collections/reindex` inherits the same hard 30 s API Gateway integration
+timeout as `POST /search/reindex`; at a few thousand works it will 504 at the
+gateway while the Lambda runs on. The escape hatch is the self-invoke +
+status-object pattern `importAssets.js` already uses.
 
 ## Coding Style & Naming Conventions
 Use CommonJS modules (`require`/`module.exports`) and 2-space indentation in all Node.js code under `app/`. The UI (`/ui`) uses ESM and JSX. Prefer descriptive, dashed directory names and camelCase identifiers. Strings default to double quotes; async work uses `async`/`await`.
@@ -167,10 +237,29 @@ The same gray-to-accent idea applies to **editable text** (`.canvas-label-editab
 
 **Metadata field spacing.** Field groups in the Metadata and Layout panels — Description, Additional fields, Display — are separated by **2rem**, via the shared `.metadata-fields` class in `ui/src/App.css`. Add new fields as children of that container rather than giving them a `gap` prop of their own, and the spacing comes for free. The fields are visually distinct blocks with their own small label-to-control spacing (`mb="1"`), so they need noticeably more room between groups than a default Radix gap provides.
 
+**Comboboxes and popups.** Radix Themes has no combobox, and neither `DropdownMenu`
+nor `Popover` can back one: both move focus into the popup, which makes typing
+impossible. `WorkCollectionsField` is the worked example — a plain
+absolutely-positioned `<ul role="listbox">` anchored to a `position: relative`
+wrapper, with `onMouseDown={e => e.preventDefault()}` on every option so focus
+never leaves the input (which also means no ref and no document listener). Note
+`.rt-TextFieldRoot` has a **fixed height and does not wrap**, so chips belong
+above the field, not inside it. Radix `Card` sets `contain: paint`, so the Clover
+viewer's `z-index: 99999` is trapped in its own stacking context and a modest
+`z-index` on the listbox is enough.
+
+Any rule that overrides `.canvas-label-editable` (which sets
+`align-self: flex-start`) must use a two-class selector so it wins regardless of
+source order, and must live in `ui/src/App.css` — component stylesheets under
+`ui/src/components/` are imported *before* `App.css`, so an equal-specificity
+override there would silently lose.
+
 The tokens are declared on `:root, .radix-themes` together. Radix redeclares its scales on `.radix-themes`, so a token defined only on `:root` resolves against the bare document and silently misses the active theme's gray/accent — the same trap that applies to the font-family overrides above it.
 
 ## Testing Guidelines
-Add tests alongside code under `app/**/__tests__/` with filenames ending in `.test.js`. Use Node's native runner (`node --test`); wire it into `npm test` once implemented. Keep fixtures small under `app/<module>/__fixtures__`. Any new tiling or presentation feature should include at least a smoke test and validation against a sample IIIF document.
+Add tests alongside code under `app/**/__tests__/` with filenames ending in `.test.js`. Run them with `npm test` (Node's native runner). Keep fixtures small under `app/<module>/__fixtures__`.
+
+Tests must not require the AWS SDK: the repo root declares no dependencies, so nothing under `node_modules` resolves there and any module that `require`s `@aws-sdk/*` at load time is untestable locally. That is why the pure logic lives in `app/shared/` (`collection.js`, `language.js`) and the IO lives in the lambda modules — keep that split when adding code, and keep `app/shared/collection.js` free of any `manifest.js` import (`manifest.js` loads the SDK, and the reverse direction would also be a require cycle). Any new tiling or presentation feature should include at least a smoke test and validation against a sample IIIF document.
 
 ## Commit & Pull Request Guidelines
 Use Conventional Commits (`feat:`, `fix:`, `chore:`, etc.) from the start. Reference related GitHub issues in the PR body. Include manual verification steps (`npm test`, sample render) so reviewers can reproduce. Keep PRs focused; split unrelated work into separate branches.

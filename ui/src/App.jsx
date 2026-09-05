@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useMemo, useState} from "react";
+import {useCallback, useEffect, useId, useMemo, useState} from "react";
 import {Link as RouterLink, useNavigate, useParams} from "react-router-dom";
 import {Amplify} from "aws-amplify";
 import {fetchAuthSession} from "aws-amplify/auth";
@@ -27,6 +27,8 @@ import {
   ArrowUpIcon,
   PlusIcon,
   CheckIcon,
+  ChevronDownIcon,
+  Cross2Icon,
   TrashIcon,
   ZoomInIcon,
 } from "@radix-ui/react-icons";
@@ -57,6 +59,14 @@ import "./App.css";
 
 const MANIFEST_API_BASE = (import.meta.env.VITE_MANIFEST_API_URL || "").replace(/\/$/, "");
 const SEARCH_API_BASE = (import.meta.env.VITE_SEARCH_API_URL || "").replace(/\/$/, "");
+// VITE_MANIFEST_API_URL already ends in /manifests, so the collections
+// vocabulary is a sibling endpoint rather than a child of it. The fallback
+// derives one so the feature still works against a stack deployed before the
+// variable existed.
+const COLLECTION_API_BASE = (
+  import.meta.env.VITE_COLLECTION_API_URL ||
+  (/\/manifests$/.test(MANIFEST_API_BASE) ? MANIFEST_API_BASE.replace(/\/manifests$/, "/collections") : "")
+).replace(/\/$/, "");
 const STORAGE_BUCKET = import.meta.env.VITE_STORAGE_BUCKET || "";
 const SOURCE_BUCKET = import.meta.env.VITE_SOURCE_BUCKET || "";
 const STORAGE_REGION = import.meta.env.VITE_STORAGE_REGION || import.meta.env.VITE_AWS_REGION || "";
@@ -127,7 +137,86 @@ function identifierFromManifestId(manifestUrl) {
   return match ? match[1] : null;
 }
 
-function ManifestList({manifests, selectedId, onDelete}) {
+const COLLECTION_FILTER_ALL = "__all__";
+const COLLECTION_FILTER_NONE = "__none__";
+
+// The Collection column's header is the filter control: clicking it opens the
+// list of collections actually in use. DropdownMenu is the right primitive here
+// (unlike in the combobox) because a menu *should* take focus — there is nothing
+// to type into.
+function CollectionFilterHeader({options, value, onChange}) {
+  const active = value !== COLLECTION_FILTER_ALL;
+  const activeLabel =
+    value === COLLECTION_FILTER_NONE
+      ? "None"
+      : options.find((option) => option.slug === value)?.label;
+
+  return (
+    <Table.ColumnHeaderCell>
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger>
+          <button
+            type="button"
+            className={`collection-filter${active ? " collection-filter--active" : ""}`}
+            aria-label={active ? `Collection, filtered by ${activeLabel}` : "Collection, click to filter"}
+          >
+            <span>{active ? `Collection: ${activeLabel}` : "Collection"}</span>
+            <ChevronDownIcon />
+          </button>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content size="1">
+          <DropdownMenu.RadioGroup value={value} onValueChange={onChange}>
+            <DropdownMenu.RadioItem value={COLLECTION_FILTER_ALL}>All collections</DropdownMenu.RadioItem>
+            <DropdownMenu.RadioItem value={COLLECTION_FILTER_NONE}>Not in a collection</DropdownMenu.RadioItem>
+            {options.length > 0 && <DropdownMenu.Separator />}
+            {options.map((option) => (
+              <DropdownMenu.RadioItem key={option.slug} value={option.slug}>
+                {option.label} ({option.count})
+              </DropdownMenu.RadioItem>
+            ))}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.Root>
+    </Table.ColumnHeaderCell>
+  );
+}
+
+// When a filter hides every row the table must still render its header, or the
+// filter control disappears along with the rows and there is no way to undo it.
+function EmptyFilterRow({colSpan, children}) {
+  return (
+    <Table.Row>
+      <Table.Cell colSpan={colSpan}>
+        <Text as="p" size="2" color="gray">
+          {children}
+        </Text>
+      </Table.Cell>
+    </Table.Row>
+  );
+}
+
+function CollectionCell({collections}) {
+  const list = collections || [];
+  return (
+    <Table.Cell className="collection-cell">
+      {list.length ? (
+        <Flex gap="1" wrap="wrap">
+          {list.map((collection) => (
+            <Badge key={collection.slug} size="1" variant="soft" radius="full">
+              {collection.label}
+            </Badge>
+          ))}
+        </Flex>
+      ) : (
+        <Text size="2" color="gray">
+          —
+        </Text>
+      )}
+    </Table.Cell>
+  );
+}
+
+function ManifestList({manifests, selectedId, onDelete, collectionOptions, collectionFilter, onCollectionFilterChange, filtered}) {
   const [previewManifest, setPreviewManifest] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -148,7 +237,10 @@ function ManifestList({manifests, selectedId, onDelete}) {
     }
   };
 
-  if (!manifests || manifests.length === 0) {
+  const rows = manifests || [];
+  // Only a genuinely empty library skips the table; a filtered-empty one keeps
+  // its header so the filter can be changed back.
+  if (rows.length === 0 && !filtered) {
     return <Text as="p" size="2" color="gray" className="tree-empty">No works yet.</Text>;
   }
 
@@ -158,12 +250,20 @@ function ManifestList({manifests, selectedId, onDelete}) {
         <Table.Header>
           <Table.Row>
             <Table.ColumnHeaderCell>Title</Table.ColumnHeaderCell>
+            <CollectionFilterHeader
+              options={collectionOptions}
+              value={collectionFilter}
+              onChange={onCollectionFilterChange}
+            />
             <Table.ColumnHeaderCell>Assets</Table.ColumnHeaderCell>
             <Table.ColumnHeaderCell></Table.ColumnHeaderCell>
           </Table.Row>
         </Table.Header>
         <Table.Body>
-          {manifests.map((manifest) => {
+          {rows.length === 0 && (
+            <EmptyFilterRow colSpan={4}>No works in this collection.</EmptyFilterRow>
+          )}
+          {rows.map((manifest) => {
             const isActive = manifest.identifier === selectedId;
             const canvasCount = Number.isFinite(manifest.itemCount)
               ? manifest.itemCount
@@ -182,6 +282,7 @@ function ManifestList({manifests, selectedId, onDelete}) {
                     </RouterLink>
                   </Link>
                 </Table.RowHeaderCell>
+                <CollectionCell collections={manifest.collections} />
                 <Table.Cell className="assets-cell">
                   <AssetThumbnails
                     services={manifest.thumbnails}
@@ -275,7 +376,16 @@ function ManifestList({manifests, selectedId, onDelete}) {
   );
 }
 
-function SearchResultsList({results, loading, error}) {
+function SearchResultsList({
+  results,
+  loading,
+  error,
+  collectionsFor,
+  collectionOptions,
+  collectionFilter,
+  onCollectionFilterChange,
+  filtered,
+}) {
   if (loading) {
     return <Text as="p" size="2" color="gray">Searching…</Text>;
   }
@@ -288,7 +398,8 @@ function SearchResultsList({results, loading, error}) {
     );
   }
 
-  if (!results || results.length === 0) {
+  const hits = results || [];
+  if (hits.length === 0 && !filtered) {
     return <Text as="p" size="2" color="gray" className="tree-empty">No matching works.</Text>;
   }
 
@@ -297,10 +408,18 @@ function SearchResultsList({results, loading, error}) {
       <Table.Header>
         <Table.Row>
           <Table.ColumnHeaderCell>Title</Table.ColumnHeaderCell>
+          <CollectionFilterHeader
+            options={collectionOptions}
+            value={collectionFilter}
+            onChange={onCollectionFilterChange}
+          />
         </Table.Row>
       </Table.Header>
       <Table.Body>
-        {results.map((hit) => {
+        {hits.length === 0 && (
+          <EmptyFilterRow colSpan={2}>No matching works in this collection.</EmptyFilterRow>
+        )}
+        {hits.map((hit) => {
           const identifier = identifierFromManifestId(hit.manifestId);
           return (
             <Table.Row key={hit.id}>
@@ -315,6 +434,7 @@ function SearchResultsList({results, loading, error}) {
                   <Text size="2">{hit.title || hit.manifestId}</Text>
                 )}
               </Table.Cell>
+              <CollectionCell collections={collectionsFor(identifier)} />
             </Table.Row>
           );
         })}
@@ -574,6 +694,371 @@ function readLanguageMap(map) {
 
 function toLanguageMap(values) {
   return {none: values};
+}
+
+// The server owns slugification; this mirrors its rule closely enough to answer
+// one question locally — is what the user typed a collection we already know, or
+// a new one? The save response is still the authority: chips are re-derived from
+// the manifest it returns, so a disagreement degrades to a label snapping to its
+// canonical spelling, never a duplicate collection.
+function collectionSlug(value) {
+  return (value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+const MANAGED_COLLECTION_FLAG = "staticiiif:managed";
+
+// An imported manifest arrives with its own `partOf` pointing at the source
+// institution's collection. The server preserves those, but they are not ours to
+// show or send back — read only the entries it marks as managed.
+function readManagedCollections(manifest) {
+  const entries = Array.isArray(manifest?.partOf) ? manifest.partOf : [];
+  return entries
+    .filter((entry) => entry?.[MANAGED_COLLECTION_FLAG] === true)
+    .map((entry) => readLanguageMap(entry.label)[0] || "")
+    .filter(Boolean);
+}
+
+// Collection membership, edited from the work's own page. Radix Themes has no
+// combobox, and the two primitives that look close — DropdownMenu and Popover —
+// both move focus into the popup, which makes typing impossible. So the
+// suggestion list is a plain absolutely-positioned listbox and focus never
+// leaves the input: every option and chip button cancels its own mousedown, so
+// the field is not blurred out from under a click.
+function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(savedCollections);
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [listOpen, setListOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const baseId = useId();
+  const listboxId = `${baseId}-listbox`;
+  const optionId = (index) => `${baseId}-option-${index}`;
+
+  // Same contract as InlineTextEditor: props win at rest, the draft wins while
+  // editing. `savedCollections` must be memoized by the parent, or this fires on
+  // every render against a never-equal array.
+  useEffect(() => {
+    if (!editing) setDraft(savedCollections);
+  }, [savedCollections, editing]);
+
+  const options = useMemo(() => {
+    const typed = query.trim();
+    const typedSlug = collectionSlug(typed);
+    const chosen = new Set(draft.map(collectionSlug));
+    const needle = typed.toLowerCase();
+
+    // Already-chosen collections drop out: they are chips a few pixels away, so
+    // re-offering them is noise.
+    const rows = vocabulary
+      .filter((entry) => !chosen.has(entry.slug))
+      .filter((entry) => !needle || entry.label.toLowerCase().includes(needle))
+      .sort((a, b) => {
+        const rank = (entry) => {
+          if (!needle) return 1;
+          const label = entry.label.toLowerCase();
+          if (label === needle) return 0;
+          return label.startsWith(needle) ? 1 : 2;
+        };
+        return rank(a) - rank(b) || a.label.localeCompare(b.label);
+      })
+      .map((entry) => ({
+        kind: "existing",
+        key: entry.slug,
+        label: entry.label,
+        itemCount: entry.itemCount,
+      }));
+
+    // Create is offered only when nothing in the vocabulary normalizes onto the
+    // typed text, so "campus maps" matches "Campus Maps" rather than proposing a
+    // second collection that would slug onto the first one server-side.
+    if (typedSlug && !vocabulary.some((entry) => entry.slug === typedSlug) && !chosen.has(typedSlug)) {
+      rows.push({kind: "create", key: `create:${typedSlug}`, label: typed});
+    }
+    return rows;
+  }, [vocabulary, query, draft]);
+
+  const typedSlug = collectionSlug(query);
+  // Derived during render rather than stored: an exact normalized match leads on
+  // its own so Enter reuses it, and `activeIndex` only ever holds explicit
+  // arrow/pointer intent. Clamped here so a stale index cannot run past the list.
+  const exactIndex = options.findIndex(
+    (option) => option.kind === "existing" && collectionSlug(option.label) === typedSlug,
+  );
+  const highlighted = activeIndex >= 0 && activeIndex < options.length ? activeIndex : exactIndex;
+  const showList = listOpen && options.length > 0;
+  const duplicate = Boolean(typedSlug) && draft.some((name) => collectionSlug(name) === typedSlug);
+
+  const sortedSlugs = (names) => names.map(collectionSlug).sort().join("\u0000");
+  const isDirty = sortedSlugs(savedCollections) !== sortedSlugs(draft);
+
+  const startEditing = () => {
+    setDraft(savedCollections);
+    setQuery("");
+    setActiveIndex(-1);
+    setError(null);
+    setListOpen(true);
+    setEditing(true);
+  };
+
+  const cancelEditing = () => {
+    setDraft(savedCollections);
+    setQuery("");
+    setActiveIndex(-1);
+    setError(null);
+    setListOpen(false);
+    setEditing(false);
+  };
+
+  const addCollection = (label) => {
+    const value = label.trim();
+    const slug = collectionSlug(value);
+    if (!slug) return;
+    // A typed string that normalizes onto a collection we already know adopts
+    // that collection's own spelling, so "campus maps" cannot fork "Campus Maps".
+    const known = vocabulary.find((entry) => entry.slug === slug);
+    setDraft((prev) =>
+      prev.some((name) => collectionSlug(name) === slug) ? prev : [...prev, known ? known.label : value],
+    );
+    setQuery("");
+    setActiveIndex(-1);
+    setListOpen(true);
+  };
+
+  const removeCollection = (label) => {
+    setDraft((prev) => prev.filter((name) => name !== label));
+    setActiveIndex(-1);
+  };
+
+  const handleSave = async () => {
+    if (!isDirty) {
+      cancelEditing();
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(draft);
+      setEditing(false);
+      setListOpen(false);
+      setQuery("");
+    } catch (err) {
+      // InlineTextEditor's contract: show the message, keep the editor open, and
+      // leave the draft intact so nothing the user typed is lost.
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleKeyDown = (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (!options.length) return;
+      event.preventDefault();
+      setListOpen(true);
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      setActiveIndex(
+        highlighted < 0
+          ? step === 1
+            ? 0
+            : options.length - 1
+          : (highlighted + step + options.length) % options.length,
+      );
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (showList && highlighted >= 0) {
+        addCollection(options[highlighted].label);
+      } else if (query.trim()) {
+        addCollection(query);
+      } else {
+        handleSave();
+      }
+      return;
+    }
+    // Labels are joined with ", " at rest, so a comma can never be part of one
+    // and is free to act as a tag delimiter.
+    if (event.key === "," && query.trim()) {
+      event.preventDefault();
+      addCollection(query);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      // Two-stage dismissal: close the list first, so Escape can shed the popup
+      // without throwing away the edit.
+      if (showList) {
+        setListOpen(false);
+        setActiveIndex(-1);
+      } else {
+        cancelEditing();
+      }
+      return;
+    }
+    if (event.key === "Backspace" && !query && draft.length) {
+      event.preventDefault();
+      removeCollection(draft[draft.length - 1]);
+    }
+  };
+
+  // Leaving the editor closes the list but neither cancels (that would silently
+  // destroy work) nor saves (a silent write is worse than a visible Check).
+  const handleBlur = (event) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      setListOpen(false);
+      setActiveIndex(-1);
+    }
+  };
+
+  if (!editing) {
+    const display = savedCollections.length ? savedCollections.join(", ") : "None";
+    return (
+      <Flex align="center" justify="center" gap="2" wrap="wrap" className="work-collections">
+        <Text as="span" size="2" color="gray">
+          Collections
+        </Text>
+        <Text
+          as="span"
+          size="2"
+          weight="medium"
+          color={savedCollections.length ? undefined : "gray"}
+          role="button"
+          tabIndex={0}
+          aria-label={`Collections: ${display}`}
+          className="canvas-label-editable"
+          onClick={startEditing}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              startEditing();
+            }
+          }}
+        >
+          {display}
+        </Text>
+      </Flex>
+    );
+  }
+
+  return (
+    <Flex
+      direction="column"
+      gap="2"
+      className="work-collections work-collections-editor"
+      onBlur={handleBlur}
+    >
+      {draft.length > 0 && (
+        <Flex wrap="wrap" justify="center" gap="1">
+          {draft.map((name) => (
+            <Badge key={name} size="2" variant="soft" radius="full" className="collection-chip">
+              {name}
+              <button
+                type="button"
+                className="collection-chip__remove"
+                // Not a tab stop: Tab should reach Check, not walk N remove
+                // buttons. Backspace on an empty input is the keyboard route.
+                tabIndex={-1}
+                disabled={saving}
+                aria-label={`Remove ${name}`}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => removeCollection(name)}
+              >
+                <Cross2Icon width="12" height="12" />
+              </button>
+            </Badge>
+          ))}
+        </Flex>
+      )}
+
+      <Flex align="center" gap="1">
+        <Box className="collections-combobox">
+          <TextField.Root
+            size="2"
+            value={query}
+            autoFocus
+            disabled={saving}
+            autoComplete="off"
+            placeholder={draft.length ? "Add another collection…" : "Search or create a collection…"}
+            role="combobox"
+            aria-label="Collections"
+            aria-autocomplete="list"
+            aria-expanded={showList}
+            aria-controls={showList ? listboxId : undefined}
+            aria-activedescendant={showList && highlighted >= 0 ? optionId(highlighted) : undefined}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setActiveIndex(-1);
+              setListOpen(true);
+            }}
+            onFocus={() => setListOpen(true)}
+            onKeyDown={handleKeyDown}
+          />
+          {showList && (
+            <ul id={listboxId} role="listbox" aria-label="Collections" className="collections-listbox">
+              {options.map((option, index) => (
+                <li
+                  key={option.key}
+                  id={optionId(index)}
+                  role="option"
+                  aria-selected={index === highlighted}
+                  className={`collections-option${index === highlighted ? " collections-option--active" : ""}`}
+                  onMouseDown={(event) => event.preventDefault()}
+                  // Pointer and keyboard drive the same highlight, so there is
+                  // never a second competing hover state.
+                  onMouseEnter={() => setActiveIndex(index)}
+                  onClick={() => addCollection(option.label)}
+                >
+                  {option.kind === "create" ? (
+                    <>
+                      <PlusIcon />
+                      <span>Create “{option.label}”</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="collections-option__label">{option.label}</span>
+                      {typeof option.itemCount === "number" && (
+                        <span className="collections-option__count">{option.itemCount}</span>
+                      )}
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Box>
+        <IconButton
+          size="2"
+          // Solid while dirty: the one cue that a commit is still pending.
+          variant={isDirty ? "solid" : "soft"}
+          onClick={handleSave}
+          loading={saving}
+          disabled={saving}
+          aria-label="Save collections"
+        >
+          <CheckIcon />
+        </IconButton>
+      </Flex>
+
+      {error && (
+        <Text as="p" size="1" color="red">
+          {error}
+        </Text>
+      )}
+      {!error && duplicate && (
+        <Text as="p" size="1" color="gray">
+          Already in Collections.
+        </Text>
+      )}
+    </Flex>
+  );
 }
 
 function ManifestMetadataPanel({manifest, onSaveSummary, onSaveMetadata}) {
@@ -1118,6 +1603,7 @@ function WorksListPanel({
   onDeleteManifest,
 }) {
   const searchApiAvailable = Boolean(SEARCH_API_BASE);
+  const [collectionFilter, setCollectionFilter] = useState(COLLECTION_FILTER_ALL);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState(null);
   const [searchLoading, setSearchLoading] = useState(false);
@@ -1126,6 +1612,66 @@ function WorksListPanel({
   const [reindexResult, setReindexResult] = useState(null);
   const [reindexError, setReindexError] = useState(null);
 
+  // Options come from the works themselves, not the collections vocabulary, so
+  // the filter can never offer something that would match nothing here.
+  const collectionOptions = useMemo(() => {
+    const bySlug = new Map();
+    for (const manifest of manifests) {
+      for (const collection of manifest.collections || []) {
+        const seen = bySlug.get(collection.slug);
+        if (seen) seen.count += 1;
+        else bySlug.set(collection.slug, {slug: collection.slug, label: collection.label, count: 1});
+      }
+    }
+    return [...bySlug.values()].sort((a, b) => a.label.localeCompare(b.label));
+  }, [manifests]);
+
+  // A filtered-to collection can disappear (its last work leaves, or is deleted),
+  // which would otherwise leave an empty table with no visible reason. Fall back
+  // to showing everything rather than stranding the user.
+  const activeFilter =
+    collectionFilter === COLLECTION_FILTER_ALL ||
+    collectionFilter === COLLECTION_FILTER_NONE ||
+    collectionOptions.some((option) => option.slug === collectionFilter)
+      ? collectionFilter
+      : COLLECTION_FILTER_ALL;
+  const isFiltered = activeFilter !== COLLECTION_FILTER_ALL;
+
+  const collectionsByIdentifier = useMemo(
+    () => new Map(manifests.map((manifest) => [manifest.identifier, manifest.collections || []])),
+    [manifests],
+  );
+
+  const matchesCollection = useCallback(
+    (collections) => {
+      if (activeFilter === COLLECTION_FILTER_ALL) return true;
+      const list = collections || [];
+      if (activeFilter === COLLECTION_FILTER_NONE) return list.length === 0;
+      return list.some((collection) => collection.slug === activeFilter);
+    },
+    [activeFilter],
+  );
+
+  const visibleManifests = useMemo(
+    () => manifests.filter((manifest) => matchesCollection(manifest.collections)),
+    [manifests, matchesCollection],
+  );
+
+  // The search index is deliberately minimal (title/manifestId only), so the
+  // column and its filter join hits against the works already loaded rather than
+  // pushing app concerns into OpenSearch.
+  const collectionsFor = useCallback(
+    (identifier) => collectionsByIdentifier.get(identifier) || [],
+    [collectionsByIdentifier],
+  );
+
+  const visibleSearchResults = useMemo(
+    () =>
+      searchResults?.filter((hit) =>
+        matchesCollection(collectionsByIdentifier.get(identifierFromManifestId(hit.manifestId))),
+      ) ?? null,
+    [searchResults, collectionsByIdentifier, matchesCollection],
+  );
   useEffect(() => {
     const query = searchQuery.trim();
     if (!query || !searchApiAvailable) {
@@ -1231,14 +1777,27 @@ function WorksListPanel({
             </Callout.Root>
           )}
           {isSearching ? (
-            <SearchResultsList results={searchResults} loading={searchLoading} error={searchError} />
+            <SearchResultsList
+              results={visibleSearchResults}
+              loading={searchLoading}
+              error={searchError}
+              collectionsFor={collectionsFor}
+              collectionOptions={collectionOptions}
+              collectionFilter={activeFilter}
+              onCollectionFilterChange={setCollectionFilter}
+              filtered={isFiltered}
+            />
           ) : manifestLoading ? (
             <Text as="p" size="2" color="gray">Loading works…</Text>
           ) : (
             <ManifestList
-              manifests={manifests}
+              manifests={visibleManifests}
               selectedId={selectedManifestId}
               onDelete={onDeleteManifest}
+              collectionOptions={collectionOptions}
+              collectionFilter={activeFilter}
+              onCollectionFilterChange={setCollectionFilter}
+              filtered={isFiltered}
             />
           )}
         </Box>
@@ -1266,6 +1825,8 @@ function WorkDetailPanel({
   onSaveSummary,
   onSaveMetadata,
   onSaveBehavior,
+  collections,
+  onSaveCollections,
   canvasSaving,
   canvasActionError,
   disableAddReason,
@@ -1300,6 +1861,10 @@ function WorkDetailPanel({
     () => (manifestObject ? structuredClone(manifestObject) : null),
     [manifestObject],
   );
+  // Memoized for the same reason viewerContent is: a fresh array every render
+  // would make WorkCollectionsField's prop-resync effect fire on every render
+  // and setState with a never-equal value. Never compute this inline.
+  const savedCollections = useMemo(() => readManagedCollections(manifestObject), [manifestObject]);
 
   const handleResumeClick = () => {
     setResumeError(null);
@@ -1317,19 +1882,29 @@ function WorkDetailPanel({
               <ArrowUpIcon /> View all Works
             </RouterLink>
           </Button>
-          {/* The work title is edited here rather than in the Metadata tab —
-              it is the page's own heading. Its size lives in CSS because the
-              requested 2x of the old size-6 falls between Radix's steps. */}
-          <InlineTextEditor
-            as="h1"
-            value={manifestDetail.label || ""}
-            onSave={onSaveTitle}
-            placeholder={manifestDetail.identifier}
-            ariaLabel="Save title"
-            textProps={{weight: "bold"}}
-            fieldSize="3"
-            className="work-title-editable"
-          />
+          {/* Title and collections are one unit — the collections line is a
+              caption on the heading, not a section of its own — so they share a
+              tight gap and the page's gap-7 rhythm applies to the pair. */}
+          <Flex direction="column" align="center" gap="3" className="work-heading">
+            {/* The work title is edited here rather than in the Metadata tab —
+                it is the page's own heading. Its size lives in CSS because the
+                requested 2x of the old size-6 falls between Radix's steps. */}
+            <InlineTextEditor
+              as="h1"
+              value={manifestDetail.label || ""}
+              onSave={onSaveTitle}
+              placeholder={manifestDetail.identifier}
+              ariaLabel="Save title"
+              textProps={{weight: "bold"}}
+              fieldSize="3"
+              className="work-title-editable"
+            />
+            <WorkCollectionsField
+              savedCollections={savedCollections}
+              vocabulary={collections}
+              onSave={onSaveCollections}
+            />
+          </Flex>
         </Flex>
       )}
       {(isFailed || isStale) && (
@@ -1472,6 +2047,10 @@ export default function App({ signOut }) {
   const [importError, setImportError] = useState(null);
   const [importFetching, setImportFetching] = useState(false);
   const [importConfirming, setImportConfirming] = useState(false);
+  // The collection vocabulary is global, not per-work: fetched once on mount and
+  // then refreshed from the response of every save, since a save can create a
+  // collection or empty the last work out of one.
+  const [collections, setCollections] = useState([]);
   const [canvasSaving, setCanvasSaving] = useState(false);
   const [canvasActionError, setCanvasActionError] = useState(null);
 
@@ -1483,6 +2062,19 @@ export default function App({ signOut }) {
     },
     [],
   );
+
+  const refreshCollections = useCallback(async () => {
+    if (!COLLECTION_API_BASE) return;
+    try {
+      const data = await apiFetch(COLLECTION_API_BASE, {errorMessage: "Unable to load collections"});
+      setCollections(Array.isArray(data.collections) ? data.collections : []);
+    } catch (err) {
+      // Non-fatal: without the vocabulary the field still works, it just can't
+      // suggest — every entry reads as a create, and the server reconciles.
+      console.error("Unable to load collections", err);
+      setCollections([]);
+    }
+  }, []);
 
   const refreshManifests = useCallback(async () => {
     if (!manifestApiAvailable) {
@@ -1516,8 +2108,11 @@ export default function App({ signOut }) {
       }
       await apiFetch(endpoint, {method: "DELETE", errorMessage: "Unable to delete work"});
       await refreshManifests();
+      // The deleted work may have been the last member of a collection, which
+      // the server has now removed.
+      await refreshCollections();
     },
-    [manifestApiUrl, refreshManifests],
+    [manifestApiUrl, refreshCollections, refreshManifests],
   );
 
   const handleResumeImport = useCallback(
@@ -1758,6 +2353,32 @@ export default function App({ signOut }) {
     [persistManifestFields],
   );
 
+  // Membership lives in `partOf`, which nothing in the viewer reads — so unlike
+  // persistManifestFields this must NOT bump viewerRevision. Remounting Clover
+  // here would throw away the user's zoom and page position to redraw a change
+  // the viewer cannot even see.
+  const persistWorkCollections = useCallback(
+    async (labels) => {
+      if (!selectedManifestId) {
+        throw new Error("Select a work first");
+      }
+      const endpoint = manifestApiUrl(`${encodeURIComponent(selectedManifestId)}/collections`);
+      const data = await apiFetch(endpoint, {
+        method: "PUT",
+        body: {collections: labels},
+        errorMessage: "Unable to save collections",
+      });
+      setManifestDetail(data.manifest);
+      // The vocabulary comes back with the write, so there is no follow-up GET
+      // to race against our own save.
+      if (Array.isArray(data.collections)) {
+        setCollections(data.collections);
+      }
+      return data.manifest;
+    },
+    [manifestApiUrl, selectedManifestId],
+  );
+
   const handleAttachAssets = useCallback(
     async (newCanvases) => {
       if (!manifestDetail?.manifest) {
@@ -1822,6 +2443,10 @@ export default function App({ signOut }) {
     if (!manifestApiAvailable) return;
     refreshManifests();
   }, [manifestApiAvailable, refreshManifests]);
+
+  useEffect(() => {
+    refreshCollections();
+  }, [refreshCollections]);
 
   useEffect(() => {
     if (!manifestApiAvailable) {
@@ -1935,6 +2560,8 @@ export default function App({ signOut }) {
               onSaveSummary={handleSaveSummary}
               onSaveMetadata={handleSaveMetadata}
               onSaveBehavior={handleSaveBehavior}
+              collections={collections}
+              onSaveCollections={persistWorkCollections}
               canvasSaving={canvasSaving}
               canvasActionError={canvasActionError}
               disableAddReason={disableAddReason}

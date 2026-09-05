@@ -1,0 +1,131 @@
+{
+  "@context": "http://iiif.io/api/presentation/3/context.json",
+  "id": "https://api.dc.library.northwestern.edu/api/v2/works/6f336d7c-fb8a-4c15-8f34-44f30866b7f4?as=iiif",
+  "type": "Manifest",
+  "label": {
+    "none": [
+      "Centurion bicycles"
+    ]
+  },
+  "thumbnail": [
+    {
+      "id": "https://api.dc.library.northwestern.edu/api/v2/works/6f336d7c-fb8a-4c15-8f34-44f30866b7f4/thumbnail",
+      "type": "Image",
+      "format": "image/jpeg",
+      "height": 300,
+      "width": 300
+    }
+  ],
+  "partOf": [
+    {
+      "id": "https://api.dc.library.northwestern.edu/api/v2/collections/cd92fb8d-76a7-4e72-be0f-78a5839caa89?as=iiif",
+      "type": "Collection",
+      "label": {
+        "none": [
+          "Late 19th - Early 20th Century Bicycle and Bicycle Parts Catalogs"
+        ]
+      },
+      "summary": {
+        "none": [
+          "This collection contains lavishly illustrated early U.S. bicycle and bicycle parts manufacturers’ catalogs covering the period from 1890 through 1932, with the great majority published between 1890 and 1902. The 71 items in this collection represent over 40 manufacturers, roughly geographically distributed in equal parts between the Chicago area, the East Coast, and the Midwest."
+        ]
+      }
+    }
+  ],
+  "items": [
+    {
+      "id": "https://api.dc.library.northwestern.edu/api/v2/file-sets/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d?as=iiif",
+      "type": "Canvas",
+      "height": 3055,
+      "width": 4141,
+      "label": {
+        "none": [
+          "Front Cover"
+        ]
+      },
+      "thumbnail": [
+        {
+          "id": "https://iiif.dc.library.northwestern.edu/iiif/3/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d/full/!300,300/0/default.jpg",
+          "type": "Image",
+          "format": "image/jpeg",
+          "height": 300,
+          "width": 300,
+          "service": [
+            {
+              "id": "https://iiif.dc.library.northwestern.edu/iiif/3/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d",
+              "profile": "http://iiif.io/api/image/3/level2.json",
+              "type": "ImageService3"
+            }
+          ]
+        }
+      ],
+      "items": [
+        {
+          "id": "https://api.dc.library.northwestern.edu/api/v2/file-sets/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d?as=iiif/annotation-page",
+          "type": "AnnotationPage",
+          "items": [
+            {
+              "id": "https://api.dc.library.northwestern.edu/api/v2/file-sets/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d?as=iiif/annotation/0",
+              "type": "Annotation",
+              "motivation": "painting",
+              "target": "https://api.dc.library.northwestern.edu/api/v2/file-sets/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d?as=iiif",
+              "body": {
+                "id": "https://iiif.dc.library.northwestern.edu/iiif/3/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d/full/600,/0/default.jpg",
+                "type": "Image",
+                "format": "image/tiff",
+                "height": 3055,
+                "width": 4141,
+                "label": {
+                  "en": [
+                    "Front Cover"
+                  ]
+                },
+                "service": [
+                  {
+                    "id": "https://iiif.dc.library.northwestern.edu/iiif/3/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d",
+                    "profile": "http://iiif.io/api/image/3/level2.json",
+                    "type": "ImageService3"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "placeholderCanvas": {
+        "id": "https://api.dc.library.northwestern.edu/api/v2/file-sets/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d?as=iiif/placeholder",
+        "type": "Canvas",
+        "width": 640,
+        "height": 472,
+        "items": [
+          {
+            "id": "https://api.dc.library.northwestern.edu/api/v2/file-sets/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d?as=iiif/placeholder/annotation-page/0",
+            "type": "AnnotationPage",
+            "items": [
+              {
+                "id": "https://api.dc.library.northwestern.edu/api/v2/file-sets/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d?as=iiif/placeholder/annotation/0",
+                "type": "Annotation",
+                "motivation": "painting",
+                "body": {
+                  "id": "https://iiif.dc.library.northwestern.edu/iiif/3/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d/full/!640,472/0/default.jpg",
+                  "type": "Image",
+                  "format": "image/tiff",
+                  "width": 640,
+                  "height": 472,
+                  "service": [
+                    {
+                      "id": "https://iiif.dc.library.northwestern.edu/iiif/3/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d",
+                      "type": "ImageService3",
+                      "profile": "http://iiif.io/api/image/3/level2.json"
+                    }
+                  ]
+                },
+                "target": "https://api.dc.library.northwestern.edu/api/v2/file-sets/cc4b2d63-d26c-4af9-82d2-2b0922bfae9d?as=iiif/placeholder"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
