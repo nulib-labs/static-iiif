@@ -16,3 +16,24 @@
   display: block;
   margin-bottom: var(--space-1);
 }
+
+/* A band of works across the top of the pane. Purely decorative — aria-hidden,
+   and the pane lays out correctly when the sample is missing or still loading. */
+.signin-showcase {
+  gap: 2px;
+  margin: calc(var(--space-6) * -1) calc(var(--space-6) * -1) var(--space-5);
+  border-radius: var(--radius-3) var(--radius-3) 0 0;
+  overflow: hidden;
+  background-color: var(--gray-3);
+}
+
+.signin-showcase img {
+  /* Equal squares regardless of the source aspect ratio: flex-basis 0 with
+     flex-grow 1 makes the five split the width evenly, and the square region
+     comes from the Image API request itself. */
+  flex: 1 1 0;
+  min-width: 0;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+}

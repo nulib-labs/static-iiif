@@ -144,6 +144,64 @@ aws cognito-idp admin-set-user-password \
 ### Amplify deployment
 Connect the repo in Amplify (this is Amplify **Hosting** only — auth/storage/API are all defined via SAM, not the Amplify backend framework). The inline `BuildSpec` in `template.yml`'s `AmplifyApp` resource handles the build (`ui/` subdirectory, outputs `ui/dist`) and injects the `VITE_*` environment variables from the stack's own resources automatically.
 
+## Naming
+
+The app is called **Understory** in the UI. The repo, the AWS stack, bucket
+names and S3 prefixes are all still `static-iiif` — that rename has not been
+done, so don't "fix" the mismatch in infrastructure without being asked.
+
+## Sign-in showcase
+
+The sign-in screen renders before anyone is authenticated, and every HttpApi
+route sits behind `DefaultAuthorizer: CognitoAuthorizer` — so it cannot call the
+API at all. It reads `presentation/showcase.json`, a small public object the
+backend writes into the already-public IIIF bucket (which already allows
+cross-origin GET), and picks five of the pool at random per visit.
+
+Deliberately a static object rather than an unauthenticated `/showcase` route:
+it keeps every API route behind Cognito, and bounds what an anonymous visitor
+can see to a fixed sample instead of handing them a way to enumerate the corpus.
+The images themselves are already publicly served by the Image API, but note
+that the file does expose a sample of work identifiers to anyone who loads the
+sign-in page — that is inherent to showing real works there.
+
+It is refreshed from `GET /manifests` (`refreshShowcase`), which has already paid
+for the corpus read, using read-compare-write so an unchanged corpus writes
+nothing. That means no separate trigger to forget about. Tiles are requested as
+`square/400,400` so every one is an identical square regardless of the source
+aspect ratio — `square` region with an explicit `w,h` size is level-2 Image API
+and reads the same in both 2.x and 3.x, so no version branching is needed.
+
+## Asset list performance
+
+A work can have hundreds of canvases (one here has 271), and the asset list is a
+dnd-kit sortable. Three things keep dragging usable, and it is worth knowing
+which problem each one solves — they are not interchangeable:
+
+**Only `CANVAS_WINDOW_STEP` (40) cards are mounted at a time**, extended as a
+sentinel below the list scrolls into view. This is the one that matters for drag
+lag: dnd-kit measures the rect of *every mounted sortable* when a drag starts,
+and that cost is linear in the count — measured at roughly 1.9ms each, so 271
+cards stalled the first frame of a drag for over half a second (2 cards: 42ms,
+271 cards: 540ms, 40 cards: ~200ms). **The trade-off is deliberate: you can only
+reorder among rendered cards.** `handleDragEnd` looks indices up in the full
+`canvasIds`, and the window is a prefix slice, so indices stay absolute and
+correct. The observer is attached with a *callback ref*, not `useEffect` —
+`ManifestDetail` returns early while a work loads, so a mount effect finds no
+sentinel and never runs again. It also re-observes after each reveal, or a
+sentinel that stays on screen never reports a new intersection and the list
+stops growing.
+
+**`content-visibility: auto` with `contain-intrinsic-size`** on `.canvas-list-item`
+skips style, layout and paint for off-screen cards — it cut the per-frame layout
+cost of writing transforms from 11.3ms to 7.3ms. It does *not* help the
+drag-activation spike (measured: 558ms with it, 541ms without), so don't expect
+it to. The dragging card overrides it back to `visible`, since it is transformed
+every frame and can leave the viewport.
+
+**`loading="lazy"` on thumbnails** with explicit `width`/`height`, which took a
+271-canvas work from 271 image requests to 24.
+
 ## Asset import
 
 `triggerAssetImport` kicks off a walk over the manifest's canvases
@@ -155,15 +213,27 @@ the UI polls and what `POST /manifests/{id}/import-resume` rewinds.
 
 Two things about the shape of that walk, both learned the hard way:
 
-**Canvases are copied `IMPORT_CHUNK_SIZE` (10) at a time.** The slow part of a
-canvas is waiting on the conversion, which another Lambda is doing — so ten wait
-together rather than end to end. It also means one whole-manifest write per
-chunk instead of per canvas, which matters because a 271-canvas manifest is over
-a megabyte.
+**`IMPORT_CONCURRENCY` (10) canvases are in flight at once — a sliding window,
+not batches.** The moment one finishes the next starts, so a single slow
+conversion holds up nothing but itself. (Batching in tens would put a barrier at
+every tenth canvas and make the whole run as slow as its worst member.) The slow
+part of a canvas is waiting on the conversion, which another Lambda is doing, so
+ten wait together rather than end to end.
 
-**The walk loops inside a single invocation** (`CHUNK_BUDGET_MS`, 10 minutes of
+Because canvases finish out of order, **progress is per canvas, not a cursor**.
+`import-status.json` carries `done` (which canvases actually finished) and
+`active` (`{index: phase}` for those in flight); `completed` is just `done.length`
+for the overall bar. A failed canvas is deliberately left out of `done` so a
+resume re-attempts it. `canvasImportState` in `ui/src/App.jsx` reads those and
+falls back to the old `completed`/`currentIndex` cursor for a status object
+written before this existed. Status writes are throttled (`STATUS_THROTTLE_MS`)
+and serialized through one promise chain, so a slow write can't land after a
+newer one and resurrect stale progress.
+
+**The walk loops inside a single invocation** (`IMPORT_BUDGET_MS`, 10 minutes of
 the 15-minute timeout) and only hands off to a fresh invocation when it runs out
-of budget. This is not just a speed choice:
+of budget — draining what is in flight first, so everything below the handoff
+index has been attempted. This is not just a speed choice:
 
 > **Lambda's recursive-loop detection terminates a self-invoke chain after ~16
 > hops.** It does so *silently* — no error, no log line, no failure destination.
@@ -172,7 +242,7 @@ of budget. This is not just a speed choice:
 > unless you check the `RecursiveInvocationsDropped` CloudWatch metric.
 
 Two defences, and both are needed: looping means a 271-canvas work takes **one**
-invocation rather than 28 hops, and `RecursiveLoop: Allow` on `ManifestFunction`
+invocation rather than dozens of hops, and `RecursiveLoop: Allow` on `ManifestFunction`
 in `template.yml` opts the function out of the protection for the rare handoff a
 genuinely huge work still needs. The walk is bounded by `MAX_CANVAS_INDEX` and
 advances monotonically, so opting out is safe — that setting exists for exactly
@@ -300,6 +370,70 @@ Any rule that overrides `.canvas-label-editable` (which sets
 source order, and must live in `ui/src/App.css` — component stylesheets under
 `ui/src/components/` are imported *before* `App.css`, so an equal-specificity
 override there would silently lose.
+
+**Fluid scale — read this before writing any pixel value.** Nothing on the page
+is a fixed size. One viewport-driven unit in `ui/src/App.css` drives type,
+spacing, control heights, radii and the container together: **0.95x at 1024px
+wide, 1.10x at 1600px, 1.35x at 2560px**, clamped outside that range. 1600px is
+the anchor — at exactly that width the page renders identically to the old fixed
+design.
+
+Radix's own `scaling` prop is *not* the lever, and cannot be. It is a **unitless**
+multiplier (every token is `calc(Npx * var(--scaling))`), and CSS cannot multiply
+a length by a length — feeding it `vw` invalidates all 42 token declarations and
+collapses the theme. Both tricks for extracting a unitless number from `vw` are
+out: `calc(100vw / 1px)` is unsupported in Firefox, and `tan(atan2(1vw, 1px))`
+rides an open Firefox precision bug. So `App.css` bypasses `--scaling` and
+redefines `--space-*`, `--font-size-*`, `--line-height-*`,
+`--heading-line-height-*` and `--radius-*` against a fluid *length*.
+
+**There are two units and they are not interchangeable:**
+
+| | value at 1600px | multiplies |
+|---|---|---|
+| `--u` | 1.10px | Radix's base numbers (4, 8, 12, 24…) — the values *before* `--scaling` |
+| `--px` | 1.00px | values we measured by eye against the already-scaled rendering |
+
+**A hand-measured value `V` in our CSS becomes `calc(V * var(--px))`.** Radix base
+numbers use `--u`. Getting these backwards inflates by exactly 1.1x and silently
+breaks the anchor — `calc(1400 * var(--px))` is the 1400px container;
+`calc(1400 * var(--u))` would be 1540px. Prefer an existing token
+(`var(--space-4)`, `var(--radius-2)`) over either unit whenever one fits.
+
+Deliberately **not** scaled: hairline borders, focus rings, `box-shadow`
+offsets, pill radii (`999px`), and the `1px` clip on `.nu-wordmark-label` (that
+is a visually-hidden trick, not a size). **`rem` values are left alone on
+purpose** — `html { font-size }` is fluid, so every `rem` in the app follows for
+free, including the `rem` strings `AssetThumbnails.jsx` emits into inline styles.
+That root font-size is written additively (`calc(1rem + …)`) so it preserves the
+user's configured default at the anchor instead of overwriting it.
+
+That root font-size is also the only lever this repo has on the **Clover viewer**,
+whose chrome is ~250 `rem` values and unreachable through its theme API
+(`cloverTheme.js` can only set colours). Do not scale `.viewer-panel` /
+`.viewer-stage` independently of everything else — that grows the frame while
+Clover's own px tokens stay put and makes the mismatch worse.
+
+Two accepted consequences: below ~1400px the app is smaller than the old fixed
+design (7% at 1280, 14% at 1024), and browser zoom is ~14% less effective, since
+zooming shrinks the CSS viewport and pushes the unit toward its floor.
+
+**Typography.** Two faces, split by role in `ui/src/App.css`:
+`--default-font-family` (and `--strong-font-family`) is the static **Google Sans**
+for body copy; `--heading-font-family` is **Google Sans Flex Variable**, used for
+headings only. The reason is the weight axis — the static face ships 400/500/600/700
+and stops there, so a heading could not sit heavier than bold. The variable cut
+runs 1–1000, which is what `.app-wordmark` (`font-weight: 800`) depends on.
+
+Import the **`wght`** entrypoint, not `full`: the weight-axis file is ~50KB, while
+the all-axes build (which would additionally bring the optical-size axis) is 1.4MB.
+The optical-size axis is what a separate "Display" cut would give you, and it is not
+worth that much for a heading face. There is no `@fontsource/google-sans-display`
+package; this is the closest thing.
+
+`.rt-Heading` carries `letter-spacing: -0.02em` so every heading tracks a little
+tighter — the display face is roomier than the text face, so Radix's default
+tracking reads loose at heading sizes.
 
 The tokens are declared on `:root, .radix-themes` together. Radix redeclares its scales on `.radix-themes`, so a token defined only on `:root` resolves against the bare document and silently misses the active theme's gray/accent — the same trap that applies to the font-family overrides above it.
 

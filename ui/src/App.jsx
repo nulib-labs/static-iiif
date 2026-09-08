@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useId, useMemo, useState} from "react";
+import {useCallback, useEffect, useId, useMemo, useRef, useState} from "react";
 import {Link as RouterLink, useNavigate, useParams} from "react-router-dom";
 import {Amplify} from "aws-amplify";
 import {fetchAuthSession} from "aws-amplify/auth";
@@ -326,7 +326,7 @@ function ManifestList({manifests, selectedId, onDelete, collectionOptions, colle
         </Table.Body>
       </Table.Root>
       <Dialog.Root open={Boolean(previewManifest)} onOpenChange={(open) => !open && setPreviewManifest(null)}>
-        <Dialog.Content maxWidth="800px">
+        <Dialog.Content maxWidth="calc(800 * var(--px))">
           <Dialog.Title>{previewManifest?.label || previewManifest?.identifier}</Dialog.Title>
           {previewManifest && (
             <Box className="viewer-stage" style={{width: "100%"}}>
@@ -349,7 +349,7 @@ function ManifestList({manifests, selectedId, onDelete, collectionOptions, colle
           }
         }}
       >
-        <AlertDialog.Content maxWidth="480px">
+        <AlertDialog.Content maxWidth="calc(480 * var(--px))">
           <AlertDialog.Title>Delete work?</AlertDialog.Title>
           <AlertDialog.Description size="2">
             This permanently deletes “{pendingDelete?.label || pendingDelete?.identifier}”, its manifest,
@@ -562,10 +562,12 @@ function InlineTextEditor({
 }
 
 // Radix's DragHandleDots icons are 2 columns wide; this is a 3x3 grid.
-function DragHandleGridIcon({size = 18}) {
+// Sized from CSS (.canvas-drag-handle svg) so it tracks the fluid scale rather
+// than staying 18px inside a control that grew.
+function DragHandleGridIcon() {
   const positions = [3, 8, 13];
   return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
       {positions.flatMap((cx) =>
         positions.map((cy) => <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="1.4" />),
       )}
@@ -630,7 +632,17 @@ function SortableCanvasCard({
             </span>
           )}
           {thumbnailUrl ? (
-            <img src={thumbnailUrl} alt="" className="asset-dropzone-preview" />
+            <img
+              src={thumbnailUrl}
+              alt=""
+              className="asset-dropzone-preview"
+              /* Hundreds of assets means hundreds of requests otherwise; the
+                 intrinsic size keeps the row from reflowing as they arrive. */
+              loading="lazy"
+              decoding="async"
+              width="40"
+              height="40"
+            />
           ) : null}
           {isImported ? (
             <InlineTextEditor
@@ -967,7 +979,7 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => removeCollection(name)}
               >
-                <Cross2Icon width="12" height="12" />
+                <Cross2Icon />
               </button>
             </Badge>
           ))}
@@ -1262,6 +1274,44 @@ function ManifestDetail({
   canvasActionError,
   disableAddReason,
 }) {
+  // Reset the window when the work changes, and grow it as the sentinel below
+  // the list scrolls into view.
+  const [visibleCount, setVisibleCount] = useState(CANVAS_WINDOW_STEP);
+  const observerRef = useRef(null);
+  const identifier = detail?.identifier;
+
+  // Adjusting state during render rather than in an effect: React re-renders
+  // immediately with the new value, so the window never paints at the previous
+  // work's size.
+  const [windowedWork, setWindowedWork] = useState(identifier);
+  if (identifier !== windowedWork) {
+    setWindowedWork(identifier);
+    setVisibleCount(CANVAS_WINDOW_STEP);
+  }
+
+  // A callback ref rather than useEffect + useRef: this component returns early
+  // while the work is loading, so the sentinel does not exist on mount and a
+  // mount effect would find nothing to observe and never run again.
+  const sentinelRef = useCallback((node) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
+    if (!node) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      // Growing the list mid-drag would hand dnd-kit sortables it has not
+      // measured, so leave the window alone until the drag finishes.
+      if (document.querySelector(".canvas-list-item--dragging")) return;
+      setVisibleCount((count) => count + CANVAS_WINDOW_STEP);
+      // The sentinel node is reused across reveals, so re-arm it: without this,
+      // a sentinel that stays on screen never reports a new intersection and
+      // the list stops growing.
+      observer.unobserve(node);
+      observer.observe(node);
+    }, {rootMargin: "400px"});
+    observer.observe(node);
+    observerRef.current = observer;
+  }, []);
+
   const sensors = useSensors(
     // A small threshold keeps a click on the handle a click, and stops clicks on
     // the label editor from being swallowed as drags.
@@ -1290,15 +1340,41 @@ function ManifestDetail({
     : [];
   const canvasIds = canvases.map((canvas, index) => canvas.id || `canvas-${index}`);
 
-  // The import chain walks canvases in order, so `completed` is the boundary
-  // between what has been copied locally and what has not. No active import
-  // means everything is already local.
+  // Only render a window of cards. dnd-kit measures the rect of every mounted
+  // sortable when a drag starts, and that cost is linear in how many there are —
+  // measured at ~1.9ms each, so 271 cards stalled the first frame of a drag for
+  // over half a second. Rendering 40 keeps that under ~80ms.
+  //
+  // The trade-off is real and deliberate: you can only reorder among the cards
+  // that are rendered. Scrolling reveals more.
+  const visible = Math.min(visibleCount, canvases.length);
+  const visibleCanvasIds = canvasIds.slice(0, visible);
+  const hasMore = visible < canvases.length;
+
+  // Ten canvases copy at once and finish in whatever order they finish, so
+  // "everything below N is done" would be a lie. The status carries which
+  // canvases are actually done and what each in-flight one is doing.
+  //
+  // Plain const, not useMemo: this sits below the component's early returns, and
+  // building a set of a few hundred integers per render costs nothing.
+  const importDone = new Set(Array.isArray(importStatus?.done) ? importStatus.done : []);
   const canvasImportState = (index) => {
-    if (!importStatus) return "done";
+    if (!importStatus) return {state: "done", phase: null};
+    const active = importStatus.active;
+    if (active && Object.prototype.hasOwnProperty.call(active, index)) {
+      return {state: "active", phase: active[index]};
+    }
+    if (Array.isArray(importStatus.done)) {
+      return {state: importDone.has(index) ? "done" : "pending", phase: null};
+    }
+    // A status object written before per-canvas progress existed: fall back to
+    // the old single-cursor shape so an import already in flight still reads.
     const completed = importStatus.completed ?? 0;
-    if (index < completed) return "done";
-    if (index === (importStatus.currentIndex ?? completed)) return "active";
-    return "pending";
+    if (index < completed) return {state: "done", phase: null};
+    if (index === (importStatus.currentIndex ?? completed)) {
+      return {state: "active", phase: importStatus.phase};
+    }
+    return {state: "pending", phase: null};
   };
 
   const handleDragEnd = ({active, over}) => {
@@ -1341,23 +1417,33 @@ function ManifestDetail({
             collisionDetection={closestCenter}
             onDragEnd={handleDragEnd}
           >
-            <SortableContext items={canvasIds} strategy={verticalListSortingStrategy}>
+            <SortableContext items={visibleCanvasIds} strategy={verticalListSortingStrategy}>
               <Flex direction="column" gap="2" className="canvas-list">
-                {canvases.map((canvas, index) => (
-                  <SortableCanvasCard
-                    key={canvasIds[index]}
-                    id={canvasIds[index]}
-                    canvas={canvas}
-                    index={index}
-                    disabled={canvasSaving}
-                    importState={canvasImportState(index)}
-                    importPhase={importStatus?.phase}
-                    onRenameCanvas={onRenameCanvas}
-                    onRemoveCanvas={onRemoveCanvas}
-                  />
-                ))}
+                {canvases.slice(0, visible).map((canvas, index) => {
+                  const {state, phase} = canvasImportState(index);
+                  return (
+                    <SortableCanvasCard
+                      key={canvasIds[index]}
+                      id={canvasIds[index]}
+                      canvas={canvas}
+                      index={index}
+                      disabled={canvasSaving}
+                      importState={state}
+                      importPhase={phase}
+                      onRenameCanvas={onRenameCanvas}
+                      onRemoveCanvas={onRemoveCanvas}
+                    />
+                  );
+                })}
               </Flex>
             </SortableContext>
+            {hasMore && (
+              <Flex ref={sentinelRef} justify="center" py="4">
+                <Text size="2" color="gray">
+                  Showing {visible} of {canvases.length} assets…
+                </Text>
+              </Flex>
+            )}
           </DndContext>
         )}
       </Box>
@@ -1394,7 +1480,7 @@ function AddWorkModal({
 
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && onClose()}>
-      <Dialog.Content maxWidth="560px">
+      <Dialog.Content maxWidth="calc(560 * var(--px))">
         {step === "choose" && (
           <>
             <Dialog.Title>Add Work</Dialog.Title>
@@ -1573,7 +1659,7 @@ function AddWorkModal({
               </Flex>
             </Flex>
             <Dialog.Root open={showImportViewer} onOpenChange={setShowImportViewer}>
-              <Dialog.Content maxWidth="800px">
+              <Dialog.Content maxWidth="calc(800 * var(--px))">
                 <Flex justify="between" align="center" mb="2">
                   <Dialog.Title mb="0">{importPreview?.label || "Preview"}</Dialog.Title>
                   <Button type="button" variant="ghost" onClick={() => setShowImportViewer(false)}>
@@ -1811,6 +1897,10 @@ function WorksListPanel({
     </Flex>
   );
 }
+
+// How many asset cards to mount at a time. See ManifestDetail for why this is
+// bounded rather than rendering every canvas.
+const CANVAS_WINDOW_STEP = 40;
 
 const IMPORT_STALE_MS = 6 * 60 * 1000;
 
@@ -2561,7 +2651,7 @@ export default function App({ signOut }) {
       <main className="layout">
       <div className="layout-container">
         <Flex direction="column" gap="2" className="layout-header">
-          <Heading as="h1" size="5">Static IIIF</Heading>
+          <Heading as="h1" size="7" className="app-wordmark">Understory</Heading>
         </Flex>
         <Box pt="2">
           {selectedManifestId ? (

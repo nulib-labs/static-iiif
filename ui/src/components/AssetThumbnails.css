@@ -6,7 +6,7 @@
 .asset-thumbnails {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .asset-thumbnails--stacked {

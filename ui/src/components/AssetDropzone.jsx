@@ -31,7 +31,7 @@ function PendingPreview({src}) {
   if (failed || !src) {
     return (
       <Box className="asset-dropzone-preview asset-dropzone-preview--fallback">
-        <ImageIcon width="18" height="18" />
+        <ImageIcon className="asset-dropzone-icon" />
       </Box>
     );
   }

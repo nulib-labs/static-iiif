@@ -1,7 +1,123 @@
+/* ---------------------------------------------------------------------------
+   Fluid scale
+   ---------------------------------------------------------------------------
+   Everything on the page is a multiple of one viewport-driven unit, so type,
+   spacing, control heights, radii and the container all grow and shrink
+   together: 0.95x at 1024px wide, 1.10x at 1600px, 1.35x at 2560px, clamped
+   outside that range.
+
+   Why not Radix's own `scaling` prop: it is a UNITLESS multiplier, and every
+   token is calc(Npx * var(--scaling)). CSS cannot multiply a length by a
+   length, so feeding it vw invalidates all 42 token declarations and collapses
+   the theme. The two tricks for extracting a unitless number from vw are both
+   out — calc(100vw / 1px) is unsupported in Firefox, and tan(atan2(1vw, 1px))
+   rides an open Firefox precision bug. So we bypass --scaling and rebuild the
+   tokens against a fluid *length* instead.
+
+   TWO UNITS, AND THEY ARE NOT INTERCHANGEABLE:
+
+     --u   1.10px at 1600px. Multiplies RADIX's base numbers (4, 8, 12, 24...),
+           which are the values before --scaling was applied.
+     --px  1.00px at 1600px. Multiplies values WE measured by eye against the
+           already-scaled rendering.
+
+   A hand-measured value V in this file becomes calc(V * var(--px)). Radix base
+   numbers use --u. Mixing them up inflates by exactly 1.1x and silently breaks
+   the 1600px anchor — calc(1400 * var(--u)) is 1540px, not 1400px. */
+
+/* Registered so a resolution failure degrades to today's fixed 1.1 scale rather
+   than invalidating every dependent token at once. */
+@property --u {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 1.1px;
+}
+
+:root,
+.radix-themes {
+  /* Exact form: slope 1/3840, intercept 41/60 -> 3840 * 41/60 = 2624. */
+  --u: clamp(0.95px, (100vw + 2624px) / 3840, 1.35px);
+  --px: calc(var(--u) / 1.1);
+
+  --space-1: calc(4 * var(--u));
+  --space-2: calc(8 * var(--u));
+  --space-3: calc(12 * var(--u));
+  --space-4: calc(16 * var(--u));
+  --space-5: calc(24 * var(--u));
+  --space-6: calc(32 * var(--u));
+  --space-7: calc(40 * var(--u));
+  --space-8: calc(48 * var(--u));
+  --space-9: calc(64 * var(--u));
+
+  --font-size-1: calc(12 * var(--u));
+  --font-size-2: calc(14 * var(--u));
+  --font-size-3: calc(16 * var(--u));
+  --font-size-4: calc(18 * var(--u));
+  --font-size-5: calc(20 * var(--u));
+  --font-size-6: calc(24 * var(--u));
+  --font-size-7: calc(28 * var(--u));
+  --font-size-8: calc(35 * var(--u));
+  --font-size-9: calc(60 * var(--u));
+
+  --line-height-1: calc(16 * var(--u));
+  --line-height-2: calc(20 * var(--u));
+  --line-height-3: calc(24 * var(--u));
+  --line-height-4: calc(26 * var(--u));
+  --line-height-5: calc(28 * var(--u));
+  --line-height-6: calc(30 * var(--u));
+  --line-height-7: calc(36 * var(--u));
+  --line-height-8: calc(40 * var(--u));
+  --line-height-9: calc(60 * var(--u));
+
+  --heading-line-height-1: calc(16 * var(--u));
+  --heading-line-height-2: calc(18 * var(--u));
+  --heading-line-height-3: calc(22 * var(--u));
+  --heading-line-height-4: calc(24 * var(--u));
+  --heading-line-height-5: calc(26 * var(--u));
+  --heading-line-height-6: calc(30 * var(--u));
+  --heading-line-height-7: calc(36 * var(--u));
+  --heading-line-height-8: calc(40 * var(--u));
+  --heading-line-height-9: calc(60 * var(--u));
+}
+
+/* Radius lives on its own selector in Radix, not on .radix-themes. */
+[data-radius] {
+  --radius-1: calc(3 * var(--u) * var(--radius-factor));
+  --radius-2: calc(4 * var(--u) * var(--radius-factor));
+  --radius-3: calc(6 * var(--u) * var(--radius-factor));
+  --radius-4: calc(8 * var(--u) * var(--radius-factor));
+  --radius-5: calc(12 * var(--u) * var(--radius-factor));
+  --radius-6: calc(16 * var(--u) * var(--radius-factor));
+}
+
+/* The only lever this repo has on the Clover viewer's chrome, which is ~250 rem
+   values and unreachable through its theme API. Also makes every rem in our own
+   CSS fluid for free, including the rem strings AssetThumbnails.jsx emits into
+   inline styles.
+
+   `rem` inside a root font-size resolves against the property's INITIAL value —
+   the user's configured default — so this preserves their preference at the
+   anchor and adds a fluid delta on top, rather than overwriting it with an
+   absolute px. 160/11 = 16/1.1. */
+html {
+  font-size: calc(1rem + (var(--u) - 1.1px) * 160 / 11);
+}
+
+/* --scaling is now vestigial for tokens, but six Radix internals still read it
+   directly, and leaving it undefined would invalidate those. Only one is
+   visible here: the table's row floor, which binds at narrow widths and would
+   otherwise defeat the density the small end of the scale is buying. */
+.rt-TableRoot:where(.rt-r-size-1) { --table-cell-min-height: calc(36 * var(--u)); }
+.rt-TableRoot:where(.rt-r-size-2) { --table-cell-min-height: calc(44 * var(--u)); }
+
 :root,
 .radix-themes {
   --default-font-family: "Google Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --heading-font-family: var(--default-font-family);
+  /* Headings only — body copy and <strong> stay on the static face. The static
+     Google Sans stops at weight 700; this variable cut runs to 1000, which is
+     what lets a heading sit heavier than bold. */
+  --heading-font-family: "Google Sans Flex Variable", "Google Sans", system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
   --strong-font-family: var(--default-font-family);
   --code-font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
 
@@ -13,6 +129,19 @@
   --interactive-surface-hover: var(--accent-3);
   --interactive-surface-text: var(--gray-11);
   --interactive-surface-text-hover: var(--accent-11);
+}
+
+/* Headings run a touch tighter than Radix's default tracking: the display face
+   is roomier than the text face, so the same spacing reads loose at heading
+   sizes. Applied once here so every heading matches. */
+.rt-Heading {
+  letter-spacing: -0.02em;
+}
+
+/* The wordmark, in the header and on the sign-in pane. Heavier than bold, which
+   is only possible because the heading face is the variable cut. */
+.app-wordmark {
+  font-weight: 800;
 }
 
 :root {
@@ -36,7 +165,7 @@ body {
 }
 
 .nu-header-inner {
-  height: 56px;
+  height: calc(56 * var(--px));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -46,8 +175,8 @@ body {
 .nu-wordmark {
   display: block;
   /* source viewBox is 201.1 x 25.5, i.e. 7.886:1 */
-  width: 142px;
-  height: 18px;
+  width: calc(142 * var(--px));
+  height: calc(18 * var(--px));
   flex-shrink: 0;
   background-image: url("data:image/svg+xml,%3Csvg id='Layer_1' data-name='Layer 1' xmlns='http://www.w3.org/2000/svg' viewBox='0 0 201.1 25.5'%3E%3Cdefs%3E%3Cstyle%3E.cls-1%7Bfill:%23fff;%7D%3C/style%3E%3C/defs%3E%3Ctitle%3Enorthwestern%3C/title%3E%3Cpath class='cls-1' d='M23,3.3V2H16.3l-.1,1.3,1.4.2,1.2,1.4V18.8h-.2L5,1.9S3.5,2,2.5,2C1.2,2,0,1.9,0,1.9V3.1c1.3.1,2.5.5,2.5,2.1V23.3l-2.3.5v1.3H7l.1-1.3-1.4-.2L4.5,22.2V7.1h.1l14.8,18h1.3V3.8Z'/%3E%3Cpath class='cls-1' d='M84,22.2V13.9c0-4.2-2.7-5.4-5.5-5.4-2.3,0-5.7,2.7-5.7,2.7V6.3c0-2.2.1-4.9.2-5.9L72.6,0,67.4,1.8v.8c1.7,0,2.5,1.3,2.5,3.9V23.2l-2.3.6v1.3h7.6l.1-1.3L74,23.6l-1.2-1.4V12.5a5.16,5.16,0,0,1,3.6-1.6c2.6,0,4.8.8,4.8,4.7v7.6l-2.3.6v1.3h7.6l.1-1.3-1.4-.2Z'/%3E%3Cpath class='cls-1' d='M46.8,12.3a32.42,32.42,0,0,1,.1-3.6l-.3-.3-5,1.9v.8c1.9,0,2.5,1.7,2.5,4.6v7.5l-2.3.6v1.3h7.5l.1-1.3L48,23.6l-1.2-1.4V15.1a3.57,3.57,0,0,1,3.8-3.6,4.28,4.28,0,0,1,1.8.5l.4-.3.7-3a6.28,6.28,0,0,0-1.8-.2c-2.4,0-4.9,3.8-4.9,3.8'/%3E%3Cpath class='cls-1' d='M32.1,23.9c-3.5,0-5.4-3.4-5.4-7.4s1.5-6.6,4.5-6.6c3.4,0,5.5,3.3,5.5,7.3s-1.6,6.7-4.6,6.7M31.6,8.5c-4,0-8.2,2.9-8.2,8.6s4,8.4,8.2,8.4a8.49,8.49,0,0,0,8.3-8.7c0-5.7-4.1-8.3-8.3-8.3'/%3E%3Cpath class='cls-1' d='M198.6,22.2V13.8c0-4.1-2.7-5.3-5.4-5.3-2.3,0-5.6,2.7-5.6,2.7a17,17,0,0,1,.1-2.5l-.3-.3-5.1,1.9v.8c2,0,2.5,1.8,2.5,4.9v7.2l-2.3.6v1.3h7.6l.1-1.3-1.4-.2-1.2-1.4V12.6A4.47,4.47,0,0,1,191,11c2.3,0,4.6.8,4.6,4.7v7.6l-2.3.6v1.3h7.6l.1-1.3-1.4-.2Z'/%3E%3Cpath class='cls-1' d='M105.9,9.8l2.4.8-3.9,10.6L101,10.6l2.5-.8V8.9H96v1a1.9,1.9,0,0,1,2.1,1.9,7.72,7.72,0,0,1-.6,2.8l-2.8,6.7L91.5,10.7,94,9.8V8.9H86.2v1c1.1,0,1.9.9,2.5,2.6l4.7,12.9h1.1l4.6-11.1,4,11.1h1.1l5.3-13.7a3.33,3.33,0,0,1,.3-.6l1.1-.9a12.29,12.29,0,0,1,1.3-.2V9h-6.3Z'/%3E%3Cpath class='cls-1' d='M119.5,10.1c2.2,0,3.3,1.1,3.3,2.6v1l-.8,1.1-1.5.1-5.2.2c.1-2.9,1.9-5,4.2-5M121.3,23c-3.2,0-5.9-2-5.9-6.9h10.3a9.88,9.88,0,0,0,.2-1.9c0-3.8-2.6-5.8-5.9-5.8-4.3,0-7.7,3.6-7.7,8.6,0,5.5,3.6,8.4,7.6,8.4a9.4,9.4,0,0,0,6.1-2.6l-.3-.7a12.82,12.82,0,0,1-4.4.9'/%3E%3Cpath class='cls-1' d='M160.6,10.1c2.2,0,3.3,1.1,3.3,2.6v1l-.8,1.1-1.5.1-5.2.2c.1-2.9,1.9-5,4.2-5M162.4,23c-3.2,0-5.9-2-5.9-6.9h10.3a9.88,9.88,0,0,0,.2-1.9c0-3.8-2.6-5.8-5.9-5.8-4.3,0-7.7,3.6-7.7,8.6,0,5.5,3.6,8.4,7.6,8.4a9.4,9.4,0,0,0,6.1-2.6l-.4-.7a11.41,11.41,0,0,1-4.3.9'/%3E%3Cpath class='cls-1' d='M135.8,15.8l-1.6-.8c-2.8-1.4-3.2-1.9-3.2-3,0-1.4,1.3-2,2.8-2,2.1,0,3.2.9,3.2,3.5h1.4l.5-4.1a11.31,11.31,0,0,0-4.4-.9c-3.5,0-5.8,1.5-5.8,4.7,0,2.5,1.3,3.6,3.8,4.9l1.8.9c1.3.7,2.4,1.4,2.4,2.7s-.8,2.5-2.8,2.5-3.5-1.5-4-3.7h-1.5l.2,3.3a1.5,1.5,0,0,0,.9,1.2,12.93,12.93,0,0,0,4.4.6c2.8,0,5.7-1.7,5.7-4.6-.1-2.5-1-3.7-3.8-5.2'/%3E%3Cpath class='cls-1' d='M63.7,23.3a2.78,2.78,0,0,1-3-3l.1-9.2H66l.1-.6h0l.3-2.9-.7-.1-.5,1.1-.2.3L60.9,9V5.2l-.2-.3-1.8.3-.9,4-2.9.3v1.4h2.2l.7.8v.2c0,2.2-.1,7.3-.1,8.8,0,3.6,1.4,4.9,3.6,4.9a7.48,7.48,0,0,0,5-2l-.4-.8a7.69,7.69,0,0,1-2.4.5'/%3E%3Cpath class='cls-1' d='M149.6,23.3a2.78,2.78,0,0,1-3-3l.1-9.2h5.2l.1-.6h0l.3-2.9-.7-.1-.5,1.1-.1.3-4.2.1V5.2l-.2-.3-1.8.3-.9,4-2.9.3v1.4h2.2l.7.8v.2c0,2.2-.1,7.3-.1,8.8,0,3.6,1.4,4.9,3.6,4.9a7.48,7.48,0,0,0,5-2l-.4-.8a6.77,6.77,0,0,1-2.4.5'/%3E%3Cpath class='cls-1' d='M174,12.3a32.41,32.41,0,0,1,.1-3.6l-.3-.3-5,1.9v.8c1.9,0,2.5,1.7,2.5,4.6v7.5l-2.3.6v1.3h7.5l.1-1.3-1.4-.2L174,22.2V15.1a3.57,3.57,0,0,1,3.8-3.6,4.28,4.28,0,0,1,1.8.5l.4-.3.7-3a6.28,6.28,0,0,0-1.8-.2c-2.4,0-4.9,3.8-4.9,3.8'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
@@ -74,7 +203,7 @@ body {
   color: #ffffff;
   font: inherit;
   font-size: var(--font-size-2);
-  padding: 6px 14px;
+  padding: calc(6 * var(--px)) calc(14 * var(--px));
   cursor: pointer;
   transition: background-color 0.15s ease, border-color 0.15s ease;
 }
@@ -87,7 +216,7 @@ body {
 main.layout {
   min-height: 100vh;
   background-color: #ffffff;
-  padding: 24px 0;
+  padding: calc(24 * var(--px)) 0;
 }
 
 /* Wide-screen by default, but capped so content stops stretching on very wide
@@ -98,22 +227,22 @@ main.layout {
 .layout-container,
 .nu-header-inner {
   width: 100%;
-  max-width: 1400px;
+  max-width: calc(1400 * var(--px));
   margin: 0 auto;
-  padding-left: 24px;
-  padding-right: 24px;
+  padding-left: calc(24 * var(--px));
+  padding-right: calc(24 * var(--px));
 }
 
 .layout-container {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: calc(24 * var(--px));
 }
 
 .layout-header {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: calc(8 * var(--px));
 }
 
 /* Radix Card paints its container border as a 1px inset box-shadow on ::after,
@@ -134,7 +263,7 @@ main.layout {
 
 .panel-body {
   overflow: auto;
-  font-size: 0.95rem;
+  font-size: calc(15.2 * var(--px));
 }
 
 
@@ -188,7 +317,7 @@ main.layout {
 }
 
 .asset-picker-list {
-  max-height: 260px;
+  max-height: calc(260 * var(--px));
   overflow: auto;
 }
 
@@ -206,12 +335,12 @@ main.layout {
 
 .import-preview-thumbnail {
   position: relative;
-  width: 64px;
-  height: 64px;
+  width: calc(64 * var(--px));
+  height: calc(64 * var(--px));
   flex-shrink: 0;
   padding: 0;
   border: 1px solid var(--gray-5);
-  border-radius: 6px;
+  border-radius: var(--radius-3);
   background: var(--gray-3);
   cursor: pointer;
   display: flex;
@@ -228,10 +357,10 @@ main.layout {
 
 .import-preview-thumbnail__zoom {
   position: absolute;
-  bottom: 3px;
-  right: 3px;
-  width: 18px;
-  height: 18px;
+  bottom: calc(3 * var(--px));
+  right: calc(3 * var(--px));
+  width: calc(18 * var(--px));
+  height: calc(18 * var(--px));
   border-radius: 999px;
   background: var(--gray-12);
   color: var(--gray-1);
@@ -242,8 +371,8 @@ main.layout {
 }
 
 .import-preview-thumbnail__zoom svg {
-  width: 12px;
-  height: 12px;
+  width: calc(12 * var(--px));
+  height: calc(12 * var(--px));
 }
 
 .asset-picker-resolved-url {
@@ -252,23 +381,23 @@ main.layout {
 }
 
 .manifest-detail {
-  min-height: 180px;
+  min-height: calc(180 * var(--px));
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: calc(12 * var(--px));
 }
 
 .manifest-detail-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 12px;
+  gap: calc(12 * var(--px));
 }
 
 .manifest-detail-meta-url {
   background: var(--gray-2);
-  padding: 4px 6px;
-  border-radius: 4px;
+  padding: calc(4 * var(--px)) calc(6 * var(--px));
+  border-radius: var(--radius-2);
   font-family: var(--code-font-family);
   word-break: break-all;
   display: block;
@@ -284,10 +413,23 @@ main.layout {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: calc(8 * var(--px));
 }
 
 /* Anchors the full-height grab strip below. */
+/* Off-screen cards are skipped for style, layout and paint. A work can have
+   hundreds of assets, and a sortable drag writes a transform to every one of
+   them each frame — with 271 cards that was ~11ms of layout alone against a
+   16.7ms budget, before React had done any work.
+   This is containment, not virtualization: every card stays in the DOM, so
+   dnd-kit can still measure and reorder them. contain-intrinsic-size feeds the
+   browser the real card height (they are uniform) so the scrollbar and scroll
+   position stay honest for cards it has not rendered yet. */
+.canvas-list-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto calc(66 * var(--px));
+}
+
 .canvas-list-item {
   position: relative;
   overflow: hidden;
@@ -321,6 +463,18 @@ main.layout {
 /* The colour wash. Separate from the button so it can run wider than the grab
    area and still be inert; it fades out past the thumbnail's right edge, and
    z-index keeps it beneath the thumbnail rather than washing over it. */
+/* Icons are sized here rather than by JSX attributes so they track the fluid
+   scale — an 18px glyph inside a control that grew 23% reads under-weighted. */
+.canvas-drag-handle svg {
+  width: calc(18 * var(--px));
+  height: calc(18 * var(--px));
+}
+
+.collection-chip__remove svg {
+  width: calc(12 * var(--px));
+  height: calc(12 * var(--px));
+}
+
 .canvas-drag-handle::before {
   content: "";
   position: absolute;
@@ -379,6 +533,12 @@ main.layout {
   min-width: 16rem;
 }
 
+/* The card under the pointer must never be skipped — it is transformed every
+   frame and, once lifted, can leave the viewport entirely. */
+.canvas-list-item--dragging {
+  content-visibility: visible;
+}
+
 .canvas-list-item--dragging {
   position: relative;
   z-index: 1;
@@ -409,9 +569,9 @@ main.layout {
   display: inline-block;
   align-self: flex-start;
   cursor: pointer;
-  border-radius: 4px;
-  padding: 1px 4px;
-  margin: -1px -4px;
+  border-radius: var(--radius-2);
+  padding: calc(1 * var(--px)) calc(4 * var(--px));
+  margin: calc(-1 * var(--px)) calc(-4 * var(--px));
 }
 
 /* Alpha accent rather than the solid --accent-3: this highlight sits over cards,
@@ -437,8 +597,8 @@ main.layout {
   line-height: 1.1;
   letter-spacing: var(--letter-spacing-6);
   text-align: center;
-  padding: 2px 6px;
-  margin: -2px -6px;
+  padding: calc(2 * var(--px)) calc(6 * var(--px));
+  margin: calc(-2 * var(--px)) calc(-6 * var(--px));
 }
 
 /* The collections field in the Linking panel. The resting value reuses
@@ -568,10 +728,10 @@ main.layout {
   align-items: center;
   gap: var(--space-1);
   max-width: 14rem;
-  padding: 2px 6px;
-  margin: -2px -6px;
+  padding: calc(2 * var(--px)) calc(6 * var(--px));
+  margin: calc(-2 * var(--px)) calc(-6 * var(--px));
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-2);
   background: none;
   color: inherit;
   font: inherit;
@@ -616,18 +776,18 @@ main.layout {
 }
 
 .viewer-panel {
-  min-height: 520px;
+  min-height: calc(520 * var(--px));
   padding: 0;
 }
 
 .viewer {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: calc(12 * var(--px));
 }
 
 .viewer-stage {
-  min-height: 420px;
+  min-height: calc(420 * var(--px));
   overflow: hidden;
   /* Same colour and radius as the ring Radix paints on the asset Cards, but
      INSET: the viewer panel Card has overflow:hidden and occupies the identical
@@ -656,7 +816,7 @@ main.layout {
 
 .viewer-placeholder {
   text-align: center;
-  padding: 40px 0;
+  padding: calc(40 * var(--px)) 0;
 }
 
 

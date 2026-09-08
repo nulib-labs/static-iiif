@@ -27,6 +27,7 @@ const {
   handleCollectionsRoute,
   handleManifestCollectionsRoute,
   reconcileQuietly,
+  refreshShowcase,
 } = require("./collections");
 const {
   triggerAssetImport,
@@ -280,9 +281,14 @@ exports.handler = async (event) => {
   if (segments.length === 1) {
     if (method === "GET") {
       try {
+        const summaries = await listManifestSummaries();
+        // The sign-in screen renders before anyone can call the API, so it reads
+        // a public sample from the bucket instead. Refreshed here because this
+        // route has already paid for the corpus read.
+        await refreshShowcase(summaries);
         // partOf is the shared summary's internal detail; the API surface
         // exposes the resolved collections instead.
-        const manifests = (await listManifestSummaries()).map(({partOf, ...summary}) => ({
+        const manifests = summaries.map(({partOf, ...summary}) => ({
           ...summary,
           collections: managedCollectionRefs(partOf, { baseUrl: manifestBaseUrl }),
         }));

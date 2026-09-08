@@ -1,4 +1,4 @@
-import {useState} from "react";
+import {useEffect, useState} from "react";
 import {
   confirmResetPassword,
   confirmSignIn,
@@ -16,6 +16,60 @@ const PASSWORD_HINT = "At least 8 characters, with an uppercase letter, a lowerc
 // comes back with this challenge rather than a session. It is the normal path,
 // not an edge case.
 const NEW_PASSWORD_STEP = "CONFIRM_SIGN_IN_WITH_NEW_PASSWORD_REQUIRED";
+
+// This screen renders before anyone is authenticated, so it cannot call the API —
+// every route is behind Cognito. It reads a small public sample the backend
+// writes into the IIIF bucket instead. Derived from the storage variables the UI
+// already has rather than adding another one.
+const SHOWCASE_COUNT = 5;
+const SHOWCASE_TILE = 400;
+const PRESENTATION_BASE =
+  import.meta.env.VITE_STORAGE_BUCKET && import.meta.env.VITE_STORAGE_REGION
+    ? `https://${import.meta.env.VITE_STORAGE_BUCKET}.s3.${import.meta.env.VITE_STORAGE_REGION}.amazonaws.com`
+    : "";
+
+// A square region at a fixed size, so every tile is identical no matter the
+// original aspect ratio. `square` and explicit `w,h` are level-2 Image API and
+// read the same in both 2.x and 3.x, so no version branching is needed.
+const squareUrl = (service) =>
+  `${service.replace(/\/$/, "")}/square/${SHOWCASE_TILE},${SHOWCASE_TILE}/0/default.jpg`;
+
+function pickRandom(items, count) {
+  const pool = [...items];
+  const picked = [];
+  while (pool.length && picked.length < count) {
+    picked.push(...pool.splice(Math.floor(Math.random() * pool.length), 1));
+  }
+  return picked;
+}
+
+// One image per work, a different five on each visit.
+function useShowcase() {
+  const [thumbnails, setThumbnails] = useState([]);
+
+  useEffect(() => {
+    if (!PRESENTATION_BASE) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(`${PRESENTATION_BASE}/presentation/showcase.json`, {
+          cache: "no-store",
+        });
+        if (!response.ok) return;
+        const data = await response.json();
+        const pool = Array.isArray(data?.thumbnails) ? data.thumbnails : [];
+        if (!cancelled) setThumbnails(pickRandom(pool, SHOWCASE_COUNT));
+      } catch {
+        // Decoration: no sample yet, or offline. The pane reads fine without it.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return thumbnails;
+}
 
 export default function SignIn({onSignedIn}) {
   const [step, setStep] = useState("signIn");
@@ -223,13 +277,22 @@ export default function SignIn({onSignedIn}) {
     },
   };
 
+  const showcase = useShowcase();
+
   const form = forms[step];
 
   return (
     <Flex className="signin-screen" align="center" justify="center">
       <Box className="signin-card">
+        {showcase.length > 0 && (
+          <Flex className="signin-showcase" aria-hidden="true">
+            {showcase.map((service) => (
+              <img key={service} src={squareUrl(service)} alt="" loading="lazy" />
+            ))}
+          </Flex>
+        )}
         <Flex direction="column" gap="1" mb="5">
-          <Heading as="h1" size="5">Static IIIF</Heading>
+          <Heading as="h1" size="7" className="app-wordmark">Understory</Heading>
           <Text as="p" size="2" color="gray">{form.description || "Sign in to manage your works."}</Text>
         </Flex>
 

@@ -9,7 +9,7 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  min-height: 206px;
+  min-height: calc(206 * var(--px));
   padding: var(--space-5);
   /* Interactive-surface convention: muted gray at rest, muted accent on hover.
      See "Design conventions" in AGENTS.md. */
@@ -88,4 +88,10 @@
 .asset-dropzone-processing-label {
   flex-shrink: 0;
   white-space: nowrap;
+}
+
+/* Sized here rather than by a JSX attribute so it follows the fluid scale. */
+.asset-dropzone-icon {
+  width: calc(18 * var(--px));
+  height: calc(18 * var(--px));
 }

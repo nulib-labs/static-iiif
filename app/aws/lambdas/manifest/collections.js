@@ -190,6 +190,53 @@ async function reconcileQuietly(args) {
 }
 
 // ---------------------------------------------------------------------------
+// Public showcase
+// ---------------------------------------------------------------------------
+
+// A small, public sample of image services for the sign-in screen, which renders
+// before anyone is authenticated and so cannot call the API at all.
+//
+// Written as a static object in the already-public IIIF bucket rather than
+// exposed as an unauthenticated route: it keeps every API route behind Cognito
+// and bounds what an anonymous visitor can see to this fixed sample, instead of
+// handing them a way to enumerate the corpus. The images themselves are already
+// publicly served by the Image API.
+const SHOWCASE_KEY = "presentation/showcase.json";
+const SHOWCASE_SIZE = 12;
+
+function buildShowcase(summaries) {
+  // One image per work — the first canvas, which is what the works list already
+  // treats as a work's representative image.
+  const candidates = summaries
+    .map((summary) => summary.thumbnails?.[0])
+    .filter((service) => typeof service === "string" && service);
+
+  // Deterministic sample, so an unchanged corpus produces an unchanged file and
+  // read-compare-write can skip the write entirely.
+  const step = Math.max(1, Math.floor(candidates.length / SHOWCASE_SIZE));
+  const picked = [];
+  for (let i = 0; i < candidates.length && picked.length < SHOWCASE_SIZE; i += step) {
+    picked.push(candidates[i]);
+  }
+  return {thumbnails: picked};
+}
+
+// Refreshed from GET /manifests: that route already reads every manifest, so
+// this costs one small read and (usually) no write, and the sample stays current
+// without any extra trigger to forget about.
+async function refreshShowcase(summaries) {
+  try {
+    const next = buildShowcase(summaries);
+    const current = await readJson(SHOWCASE_KEY);
+    if (current && serializeCollection(current) === serializeCollection(next)) return;
+    await writeJson(SHOWCASE_KEY, next);
+  } catch (error) {
+    // Decoration for a screen nobody has signed into yet; never fail the list.
+    console.error("Showcase refresh failed", error);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Request validation
 // ---------------------------------------------------------------------------
 
@@ -423,6 +470,7 @@ async function pruneCollections(keep) {
 }
 
 module.exports = {
+  refreshShowcase,
   applyReconciliation,
   reconcileManifestCollections,
   reconcileQuietly,
