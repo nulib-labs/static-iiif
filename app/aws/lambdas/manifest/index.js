@@ -24,10 +24,20 @@ const {
 } = require("../../../shared/collection");
 const {jsonResponse, parseBody, isNotFound} = require("./http");
 const {
+  principalFromEvent,
+  canEditWork,
+  canCreateWork,
+  canSetWorkCollections,
+  canViewWork,
+} = require("../../../shared/access");
+const {handleUsersRoute} = require("./users");
+const {
   handleCollectionsRoute,
   handleManifestCollectionsRoute,
   reconcileQuietly,
   refreshShowcase,
+  fileNewWork,
+  desiredCollectionSlugs,
 } = require("./collections");
 const {
   triggerAssetImport,
@@ -251,6 +261,19 @@ async function listManifestSummaries() {
   return listManifestSummariesShared({s3, bucket});
 }
 
+// The collections a work currently belongs to — the input to every edit check.
+function workCollections(manifest) {
+  return managedCollectionRefs(manifest?.partOf, {baseUrl: manifestBaseUrl});
+}
+
+const FORBIDDEN_EDIT = {
+  error: "You can only change works in a collection you have been granted",
+};
+
+const FORBIDDEN_VIEW = {
+  error: "You do not have access to this work",
+};
+
 exports.handler = async (event) => {
   if (event?.source === "lambda" && event?.detail?.requestContext?.condition) {
     return handleImportFailure(event.detail);
@@ -270,8 +293,19 @@ exports.handler = async (event) => {
     return jsonResponse(200, { ok: true });
   }
 
+  // Roles and collection grants both ride in the ID token as `cognito:groups`,
+  // so this is a pure read of already-verified claims — the JWT authorizer has
+  // established WHO the caller is before anything here runs.
+  //
+  // Reads stay open to any signed-in user; every guard below is on a write.
+  const principal = principalFromEvent(event);
+
+  if (segments[0] === "users") {
+    return handleUsersRoute({ method, segments, event, principal });
+  }
+
   if (segments[0] === "collections") {
-    return handleCollectionsRoute({ method, segments });
+    return handleCollectionsRoute({ method, segments, principal, event });
   }
 
   if (segments[0] !== "manifests") {
@@ -285,13 +319,20 @@ exports.handler = async (event) => {
         // The sign-in screen renders before anyone can call the API, so it reads
         // a public sample from the bucket instead. Refreshed here because this
         // route has already paid for the corpus read.
+        //
+        // Deliberately built from the UNFILTERED corpus: it is a public,
+        // pre-auth sample, and deriving it from one caller's visible subset
+        // would let whoever happens to load this route next shrink what the
+        // sign-in screen shows everyone.
         await refreshShowcase(summaries);
         // partOf is the shared summary's internal detail; the API surface
         // exposes the resolved collections instead.
-        const manifests = summaries.map(({partOf, ...summary}) => ({
-          ...summary,
-          collections: managedCollectionRefs(partOf, { baseUrl: manifestBaseUrl }),
-        }));
+        const manifests = summaries
+          .map(({partOf, ...summary}) => ({
+            ...summary,
+            collections: managedCollectionRefs(partOf, { baseUrl: manifestBaseUrl }),
+          }))
+          .filter((summary) => canViewWork(principal, summary.collections));
         return jsonResponse(200, { manifests });
       } catch (error) {
         console.error("List manifests failed", error);
@@ -306,9 +347,23 @@ exports.handler = async (event) => {
         if (!label) {
           return jsonResponse(400, { error: "Label is required" });
         }
+        // An editor must file a new work into a collection they hold, or they
+        // would immediately lose the ability to edit what they just made.
+        // Admins may leave it uncollected.
+        if (!canCreateWork(principal, desiredCollectionSlugs(body.collections))) {
+          return jsonResponse(403, {
+            error: "Choose a collection you have been granted to create a work in",
+          });
+        }
         const identifier = crypto.randomUUID();
-        const manifest = createManifestTemplate({ baseUrl: manifestBaseUrl, identifier, label });
-        await writeManifest(identifier, manifest);
+        const template = createManifestTemplate({ baseUrl: manifestBaseUrl, identifier, label });
+        await writeManifest(identifier, template);
+        const manifest = await fileNewWork({
+          identifier,
+          manifest: template,
+          labels: body.collections,
+          writeManifest,
+        });
         return jsonResponse(201, { manifest: manifestDetail(identifier, manifest) });
       } catch (error) {
         if (error.message === "Invalid JSON payload") {
@@ -351,6 +406,11 @@ exports.handler = async (event) => {
       if (!manifest || typeof manifest !== "object" || manifest.type !== "Manifest") {
         return jsonResponse(400, { error: "A valid Manifest is required" });
       }
+      if (!canCreateWork(principal, desiredCollectionSlugs(body.collections))) {
+        return jsonResponse(403, {
+          error: "Choose a collection you have been granted to import a work into",
+        });
+      }
       const identifier = crypto.randomUUID();
       // The source institution's own partOf is kept verbatim as provenance. Only
       // entries claiming to be *ours* while pointing somewhere we don't own are
@@ -364,12 +424,18 @@ exports.handler = async (event) => {
         {baseUrl: manifestBaseUrl},
       );
       await writeManifest(identifier, importedManifest);
+      const filedManifest = await fileNewWork({
+        identifier,
+        manifest: importedManifest,
+        labels: body.collections,
+        writeManifest,
+      });
       try {
         await triggerAssetImport({identifier, total: importedManifest.items.length});
       } catch (error) {
         console.error("Failed to start asset import", error);
       }
-      return jsonResponse(201, { manifest: manifestDetail(identifier, importedManifest) });
+      return jsonResponse(201, { manifest: manifestDetail(identifier, filedManifest) });
     } catch (error) {
       if (error.message === "Invalid JSON payload") {
         return jsonResponse(400, { error: error.message });
@@ -394,6 +460,9 @@ exports.handler = async (event) => {
     if (method === "GET") {
       try {
         const manifest = await readManifest(identifier);
+        if (!canViewWork(principal, workCollections(manifest))) {
+          return jsonResponse(403, FORBIDDEN_VIEW);
+        }
         return jsonResponse(200, { manifest: manifestDetail(identifier, manifest) });
       } catch (error) {
         if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
@@ -423,6 +492,9 @@ exports.handler = async (event) => {
         }
 
         const manifest = await readManifest(identifier);
+        if (!canEditWork(principal, workCollections(manifest))) {
+          return jsonResponse(403, FORBIDDEN_EDIT);
+        }
         for (const field of updates) {
           if (body[field] === null) {
             delete manifest[field];
@@ -454,6 +526,9 @@ exports.handler = async (event) => {
     if (method === "DELETE") {
       try {
         const manifest = await readManifest(identifier);
+        if (!canEditWork(principal, workCollections(manifest))) {
+          return jsonResponse(403, FORBIDDEN_EDIT);
+        }
         await deleteManifestAssets(identifier, manifest);
         await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: manifestObjectKey(identifier) }));
         await s3
@@ -481,6 +556,7 @@ exports.handler = async (event) => {
       method,
       identifier,
       event,
+      principal,
       readManifest,
       writeManifest,
     });
@@ -494,6 +570,9 @@ exports.handler = async (event) => {
           return jsonResponse(400, { error: "items must be an array" });
         }
         const manifest = await readManifest(identifier);
+        if (!canEditWork(principal, workCollections(manifest))) {
+          return jsonResponse(403, FORBIDDEN_EDIT);
+        }
         manifest.items = body.items;
         await writeManifest(identifier, manifest);
         return jsonResponse(200, { manifest: manifestDetail(identifier, manifest) });
@@ -515,6 +594,12 @@ exports.handler = async (event) => {
   if (segments.length === 3 && segments[2] === "import-status") {
     if (method === "GET") {
       try {
+        // The status carries per-canvas labels, so it is as revealing as the
+        // work itself and takes the same guard.
+        const manifest = await readManifest(identifier);
+        if (!canViewWork(principal, workCollections(manifest))) {
+          return jsonResponse(403, FORBIDDEN_VIEW);
+        }
         const status = await readImportStatus(identifier);
         return jsonResponse(200, status);
       } catch (error) {
@@ -529,6 +614,13 @@ exports.handler = async (event) => {
   if (segments.length === 3 && segments[2] === "import-resume") {
     if (method === "POST") {
       try {
+        // Resuming restarts a pipeline that rewrites the manifest, so it needs
+        // the same rights as any other edit. Costs one extra read on a route
+        // that is only hit when an import has stalled.
+        const manifest = await readManifest(identifier);
+        if (!canEditWork(principal, workCollections(manifest))) {
+          return jsonResponse(403, FORBIDDEN_EDIT);
+        }
         const status = await resumeAssetImport({ identifier });
         return jsonResponse(200, status);
       } catch (error) {

@@ -1,17 +1,34 @@
 import {useCallback, useEffect, useState} from "react";
-import {getCurrentUser, signOut as amplifySignOut} from "aws-amplify/auth";
+import {fetchAuthSession, getCurrentUser, signOut as amplifySignOut} from "aws-amplify/auth";
 import {Flex, Spinner} from "@radix-ui/themes";
 import SignIn from "./components/SignIn";
+import {SessionContext, sessionFromGroups} from "./lib/session";
 
 // Replaces Amplify's <Authenticator>: holds just enough session state to decide
 // between the sign-in screen and the app. Tokens stay in Amplify's own storage —
 // nothing about the credentials is kept here.
 export default function AuthGate({children}) {
   const [status, setStatus] = useState("checking"); // checking | signedOut | signedIn
+  const [session, setSession] = useState({username: "", role: null, collections: []});
 
   const refresh = useCallback(async () => {
     try {
-      await getCurrentUser();
+      const current = await getCurrentUser();
+      // The pool uses UsernameAttributes: [email], so Cognito's own `username`
+      // is an opaque UUID. The email claim on the ID token is the value the
+      // user actually signs in with, and unlike signInDetails it survives a
+      // reload on a cached session.
+      const {tokens} = await fetchAuthSession();
+      const claims = tokens?.idToken?.payload || {};
+      setSession({
+        username:
+          claims.email || current.signInDetails?.loginId || current.username || "",
+        // Role and collection grants are Cognito Groups, so they arrive in the
+        // token itself. They change only when the token is reissued — a grant
+        // made now is invisible here until the user signs in again or the token
+        // refreshes (an hour by default).
+        ...sessionFromGroups(claims["cognito:groups"]),
+      });
       setStatus("signedIn");
     } catch {
       // No cached session — expected on a first visit or after sign-out.
@@ -27,6 +44,7 @@ export default function AuthGate({children}) {
     try {
       await amplifySignOut();
     } finally {
+      setSession({username: "", role: null, collections: []});
       setStatus("signedOut");
     }
   }, []);
@@ -43,5 +61,9 @@ export default function AuthGate({children}) {
     return <SignIn onSignedIn={refresh} />;
   }
 
-  return children({signOut});
+  return (
+    <SessionContext.Provider value={session}>
+      {children({signOut, username: session.username})}
+    </SessionContext.Provider>
+  );
 }

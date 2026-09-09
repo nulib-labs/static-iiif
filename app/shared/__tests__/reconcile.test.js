@@ -82,7 +82,9 @@ test("removes one of two members, leaving the collection alive", () => {
   assert.equal(plan.collections[0].itemCount, 1);
 });
 
-test("removing the last member deletes the leaf but never the root", () => {
+// Collections are explicit objects now: only an admin creates one, and only an
+// admin deletes it. Emptying leaves it standing with items: [].
+test("removing the last member empties the leaf but does not remove it", () => {
   const existing = leaf("campus-maps", "Campus Maps", [member("a", "Aardvark")]);
   const plan = planReconciliation({
     baseUrl: BASE,
@@ -92,12 +94,18 @@ test("removing the last member deletes the leaf but never the root", () => {
     leaves: {"campus-maps": existing},
   });
 
-  assert.deepEqual(slugsOf(plan.leafDeletes), ["campus-maps"]);
-  assert.deepEqual(plan.leafWrites, []);
-  assert.deepEqual(plan.collections, []);
-  assert.deepEqual(plan.rootNext.items, [], "the root survives, empty");
-  assert.equal(plan.rootNext.type, "Collection");
-  assert.equal(plan.rootChanged, true);
+  assert.deepEqual(plan.leafDeletes, [], "reconciliation never deletes a collection");
+  assert.deepEqual(slugsOf(plan.leafWrites), ["campus-maps"]);
+  assert.deepEqual(plan.leafWrites[0].document.items, [], "an empty IIIF Collection, not a missing one");
+  assert.equal(plan.leafWrites[0].document.type, "Collection");
+  assert.deepEqual(plan.leafWrites[0].document.label, {none: ["Campus Maps"]}, "keeps its name");
+  assert.deepEqual(
+    plan.collections.map((c) => [c.slug, c.itemCount]),
+    [["campus-maps", 0]],
+    "still listed in the root, at zero",
+  );
+  assert.equal(plan.rootNext.items.length, 1);
+  assert.equal(plan.rootChanged, true, "its item count changed");
 });
 
 test("handles an add and a remove in the same call", () => {
@@ -112,9 +120,13 @@ test("handles an add and a remove in the same call", () => {
     },
   });
 
-  assert.deepEqual(slugsOf(plan.leafWrites), ["annual-reports"]);
-  assert.deepEqual(slugsOf(plan.leafDeletes), ["campus-maps"]);
-  assert.deepEqual(plan.collections.map((c) => c.slug), ["annual-reports"]);
+  // Both are written: one gains the work, the other is left standing but empty.
+  assert.deepEqual(slugsOf(plan.leafWrites), ["annual-reports", "campus-maps"]);
+  assert.deepEqual(plan.leafDeletes, []);
+  assert.deepEqual(
+    plan.collections.map((c) => [c.slug, c.itemCount]),
+    [["annual-reports", 1], ["campus-maps", 0]],
+  );
 });
 
 test("a no-op save writes nothing at all", () => {
@@ -170,9 +182,14 @@ test("deleting a work removes it from every collection it belonged to", () => {
     },
   });
 
-  assert.deepEqual(slugsOf(plan.leafWrites), ["campus-maps"]);
-  assert.deepEqual(slugsOf(plan.leafDeletes), ["annual-reports"], "its only member is gone");
-  assert.deepEqual(plan.collections.map((c) => c.slug), ["campus-maps", "untouched"]);
+  assert.deepEqual(slugsOf(plan.leafWrites), ["annual-reports", "campus-maps"]);
+  assert.deepEqual(plan.leafDeletes, []);
+  assert.deepEqual(
+    plan.collections.map((c) => c.slug).sort(),
+    ["annual-reports", "campus-maps", "untouched"],
+    "the emptied collection survives the work that was its only member",
+  );
+  assert.equal(plan.collections.find((c) => c.slug === "annual-reports").itemCount, 0);
   // A collection this work was never in passes through with its count intact.
   assert.equal(plan.collections.find((c) => c.slug === "untouched").itemCount, 4);
 });

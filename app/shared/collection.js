@@ -391,6 +391,17 @@ function canonicalizeCollectionLabels(desired, root) {
 // already hold. A leaf document IS its own member list, so no corpus scan is
 // needed on this path.
 //
+// Collections are explicit objects: an admin creates them on the Collections
+// screen and deletes them there. Emptying one does NOT remove it — it is
+// rewritten with `items: []`, which the Presentation spec permits ("allowed but
+// discouraged", the same allowance the root relies on).
+//
+// That is a deliberate reversal of the original "a collection with no items
+// ceases to exist" rule, and it moves the authoritative list of WHICH
+// collections exist out of the manifests and into the root document. Reindex
+// therefore has to merge with the root rather than rebuild purely from the
+// corpus — see reindexCollections.
+//
 //   member  — {manifestId, label, thumbnail}. manifestId is always required:
 //             it is how a work is found and dropped from a leaf's member list,
 //             including on the delete path where there is nothing to re-add.
@@ -407,6 +418,9 @@ function planReconciliation({baseUrl, member, removed = false, desired, root, le
   const summaryBySlug = new Map(rootCollectionSummaries(root).map((entry) => [entry.slug, entry]));
 
   const leafWrites = [];
+  // Never populated here any more: reconciliation cannot remove a collection,
+  // only empty it. Kept in the plan's shape because applyReconciliation still
+  // executes deletes for the explicit DELETE /collections/{slug} route.
   const leafDeletes = [];
 
   // Sorted, so the plan is a function of its inputs' *values* and not of the
@@ -420,12 +434,6 @@ function planReconciliation({baseUrl, member, removed = false, desired, root, le
         label: {none: [member.label]},
         ...(member.thumbnail?.length ? {thumbnail: member.thumbnail} : {}),
       });
-    }
-
-    if (!keep.length) {
-      leafDeletes.push({slug, key: collectionObjectKey(slug)});
-      summaryBySlug.delete(slug);
-      continue;
     }
 
     const label = summaryBySlug.get(slug)?.label || desiredBySlug.get(slug)?.label || extractLabel(existing?.label) || slug;

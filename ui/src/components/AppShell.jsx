@@ -1,0 +1,85 @@
+import {NavLink, Outlet} from "react-router-dom";
+import {Box, Heading} from "@radix-ui/themes";
+import {ROLE_ADMIN, useSession} from "../lib/session";
+import "../App.css";
+
+// The app's top-level sections. Order here is the order on the page.
+const SECTIONS = [
+  {path: "/works", label: "Works"},
+  {path: "/collections", label: "Collections"},
+  // Admin-only. Hiding it is a courtesy, not the control: /users is refused by
+  // the API for anyone else, and the page says so if they navigate there.
+  {path: "/users", label: "Users", adminOnly: true},
+];
+
+// NavLink marks itself active for a path and everything under it, so /works
+// stays lit on a work's own page (/works/:workId) with no path matching here.
+// It also sets aria-current, which is what makes this readable as navigation.
+function SectionNav() {
+  const {role} = useSession();
+  const visible = SECTIONS.filter((section) => !section.adminOnly || role === ROLE_ADMIN);
+
+  return (
+    <nav className="section-nav" aria-label="Sections">
+      {visible.map((section) => (
+        <NavLink
+          key={section.path}
+          to={section.path}
+          className={({isActive}) => `section-link${isActive ? " section-link--active" : ""}`}
+        >
+          {section.label}
+        </NavLink>
+      ))}
+    </nav>
+  );
+}
+
+// Every signed-in route renders inside this: the purple bar, the page container
+// and the app wordmark are identical across sections, so they live here once
+// instead of in each screen.
+export default function AppShell({signOut, username}) {
+  return (
+    <>
+      {/* Full-bleed purple utility bar, mirroring the one at the top of
+          library.northwestern.edu. Its contents align to the same container
+          width as the page below it. */}
+      <header className="nu-header">
+        <div className="nu-header-inner">
+          <a className="nu-wordmark" href="https://www.northwestern.edu/">
+            {/* The wordmark is a background image, so keep the name available to
+                screen readers — same approach the Northwestern sites use. */}
+            <span className="nu-wordmark-label">Northwestern</span>
+          </a>
+          {signOut && (
+            <div className="nu-header-session">
+              {username && (
+                <>
+                  <span className="nu-header-session__user">Signed in as {username}</span>
+                  {/* Decoration, not content — a screen reader reading "vertical
+                      line" between the two is noise. */}
+                  <span className="nu-header-session__divider" aria-hidden>
+                    |
+                  </span>
+                </>
+              )}
+              <button type="button" className="nu-header-signout" onClick={signOut}>
+                Sign out
+              </button>
+            </div>
+          )}
+        </div>
+      </header>
+      <main className="layout">
+        <div className="layout-container">
+          <div className="layout-header">
+            <Heading as="h1" size="6" className="app-wordmark">Understory</Heading>
+            <SectionNav />
+          </div>
+          <Box pt="2">
+            <Outlet />
+          </Box>
+        </div>
+      </main>
+    </>
+  );
+}

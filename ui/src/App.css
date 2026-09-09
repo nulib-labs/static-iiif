@@ -196,21 +196,77 @@ body {
   white-space: nowrap;
 }
 
-.nu-header-action {
-  background: none;
-  border: 1px solid rgba(255, 255, 255, 0.45);
-  border-radius: var(--radius-2);
+/* The session strip on the purple bar. Sign out is a link rather than a button:
+   it is a quiet utility action sitting in the site chrome, not a call to action
+   competing with the page's own controls. */
+.nu-header-session {
+  display: flex;
+  align-items: baseline;
+  gap: calc(8 * var(--px));
+  min-width: 0;
   color: #ffffff;
-  font: inherit;
   font-size: var(--font-size-2);
-  padding: calc(6 * var(--px)) calc(14 * var(--px));
-  cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
-.nu-header-action:hover {
-  background-color: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.75);
+/* An email can be long; it yields before the sign-out link does. */
+.nu-header-session__user {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nu-header-session__divider {
+  color: rgba(255, 255, 255, 0.5);
+  flex-shrink: 0;
+}
+
+.nu-header-signout {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s ease;
+}
+
+.nu-header-signout:hover,
+.nu-header-signout:focus-visible {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* Section navigation, sharing the wordmark's line. Links rather than a menu:
+   with three destinations, hiding them behind a trigger costs a click and
+   tells the user less than just showing them. */
+.section-nav {
+  display: flex;
+  align-items: center;
+  gap: calc(32 * var(--px));
+}
+
+.section-link {
+  font-size: var(--font-size-3);
+  color: var(--gray-11);
+  text-decoration: none;
+  white-space: nowrap;
+  /* The bar is painted on every link, transparent until active, so becoming
+     active never changes the link's height. Left at 2px for the same reason
+     hairlines are: it renders as a crisp rule at any scale. */
+  padding-bottom: calc(3 * var(--px));
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.section-link:hover {
+  color: var(--accent-11);
+}
+
+.section-link--active {
+  color: var(--accent-11);
+  border-bottom-color: var(--accent-9);
 }
 
 main.layout {
@@ -239,10 +295,14 @@ main.layout {
   gap: calc(24 * var(--px));
 }
 
+/* The app wordmark and the session controls (section switcher, sign out) share
+   one line, so identity and controls read as a single band above the page. */
 .layout-header {
   display: flex;
-  flex-direction: column;
-  gap: calc(8 * var(--px));
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(16 * var(--px));
+  flex-wrap: wrap;
 }
 
 /* Radix Card paints its container border as a 1px inset box-shadow on ::after,
@@ -589,14 +649,36 @@ main.layout {
   align-self: center;
 }
 
-/* Must follow .canvas-label-editable: both are single-class selectors, and that
-   rule's align-self: flex-start would otherwise beat the centering here. */
-.work-title-editable {
+/* Every section's page heading, and a work's title on its own page. The size
+   lives here rather than in a `size` prop because the wanted step falls between
+   Radix's.
+
+   Must follow .canvas-label-editable: both are single-class selectors, and that
+   rule's align-self: flex-start would otherwise beat the centering here (the
+   work title carries both classes). */
+.page-heading {
   align-self: center;
+  /* Real heading elements carry a UA margin; the work title's span does not.
+     Zero it here so both render identically. .work-title-editable's negative
+     chip margin still wins — it is declared after this rule. */
+  margin: 0;
+  /* The Understory wordmark's treatment at a larger size: display face, black
+     weight, tight tracking.
+     The face is not optional here. These render as Radix `Text`, whose default
+     family is Google Sans — loaded at 400-700 only, so a 800 on it would be
+     SYNTHESIZED into a smeared faux-bold. Google Sans Flex carries a real
+     weight axis, which is the only way to get a true black. */
+  font-family: var(--heading-font-family);
+  font-weight: 800;
   font-size: calc(var(--font-size-6) * 1.7);
   line-height: 1.1;
-  letter-spacing: var(--letter-spacing-6);
+  letter-spacing: -0.02em;
   text-align: center;
+}
+
+/* Only the click-to-edit chip. Everything visual comes from .page-heading, so
+   an editable title and a static one cannot drift apart. */
+.work-title-editable {
   padding: calc(2 * var(--px)) calc(6 * var(--px));
   margin: calc(-2 * var(--px)) calc(-6 * var(--px));
 }
@@ -820,3 +902,69 @@ main.layout {
 }
 
 
+
+/* Collections section
+   ------------------------------------------------------------------------- */
+
+/* Fixed square so a missing or slow thumbnail never reflows the row. */
+.collection-thumb {
+  display: block;
+  width: calc(32 * var(--px));
+  height: calc(32 * var(--px));
+  flex-shrink: 0;
+  border-radius: var(--radius-2);
+  overflow: hidden;
+  background-color: var(--gray-3);
+}
+
+.collection-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.collection-slug {
+  font-family: var(--code-font-family);
+}
+
+/* The "no such collection" row. Not an option — it cannot be highlighted or
+   chosen, so it deliberately takes none of the option hover treatment. */
+.collections-option--empty {
+  color: var(--gray-10);
+  cursor: default;
+  white-space: normal;
+}
+
+/* The collection of collections sits above its members, separated by a heavier
+   rule so the table reads as a parent and a list rather than a flat set. */
+.collection-row--root > * {
+  background-color: var(--gray-2);
+  border-bottom: 1px solid var(--gray-6);
+}
+
+/* The root has no thumbnail of its own. Keep the box so every label lines up,
+   but don't paint an empty tile. */
+.collection-row--root .collection-thumb {
+  background-color: transparent;
+}
+
+/* Users section
+   ------------------------------------------------------------------------- */
+
+/* One checkbox per role on every row, so the column reads as a grid down as
+   well as across. Fixed-width options keep the boxes aligned between rows even
+   though the labels differ in length. */
+.role-matrix__option {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(6 * var(--px));
+  min-width: calc(64 * var(--px));
+}
+
+/* A disabled checkbox still has to read as "on", not as absent — the User
+   column is checked for everyone, and greying it away entirely would look like
+   a rendering bug. */
+.role-matrix__option:has(:disabled) {
+  color: var(--gray-10);
+}

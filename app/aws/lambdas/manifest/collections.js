@@ -38,6 +38,12 @@ const {
   manifestThumbnail,
 } = require("../../../shared/collection");
 const {jsonResponse, parseBody, isNotFound} = require("./http");
+const {
+  canReindex,
+  canSetWorkCollections,
+  canViewCollection,
+  canManageCollections,
+} = require("../../../shared/access");
 const {readImportStatus} = require("./importAssets");
 
 const s3 = new S3Client({});
@@ -272,6 +278,7 @@ async function handleManifestCollectionsRoute({
   method,
   identifier,
   event,
+  principal,
   readManifest,
   writeManifest,
 }) {
@@ -311,6 +318,29 @@ async function handleManifestCollectionsRoute({
     // Resolve names against the collections that already exist before writing,
     // so a work never caches a spelling its collection does not use.
     const canonical = canonicalizeCollectionLabels(desired, root);
+
+    // Collections are instantiated on the Collections screen and nowhere else.
+    // Without this, saving a work's Linking tab with an unrecognised name would
+    // quietly create a collection as a side effect — which is exactly the
+    // implicit instantiation this route is not allowed to do any more.
+    const known = new Set(rootCollectionSummaries(root).map((entry) => entry.slug));
+    const unknown = canonical.filter((entry) => !known.has(entry.slug));
+    if (unknown.length) {
+      return jsonResponse(400, {
+        error: `No such collection: ${unknown.map((entry) => entry.label).join(", ")}. An administrator creates collections on the Collections screen.`,
+      });
+    }
+
+    // Checked here rather than at the router, because this is the first point
+    // where both sides of the change are known: an editor may only add or
+    // remove collections they hold, and may only touch a work they already
+    // reach through one of them.
+    if (!canSetWorkCollections(principal, previous, canonical)) {
+      return jsonResponse(403, {
+        error: "You can only move works between collections you have been granted",
+      });
+    }
+
     const next = applyCollections(manifest, {baseUrl, collections: canonical});
     await writeManifest(identifier, next);
 
@@ -343,17 +373,19 @@ async function handleManifestCollectionsRoute({
 }
 
 // GET /collections, POST /collections/reindex
-async function handleCollectionsRoute({method, segments}) {
-  if (segments.length === 1) {
-    if (method !== "GET") {
-      return jsonResponse(405, {error: "Method not allowed"});
-    }
+async function handleCollectionsRoute({method, segments, principal, event}) {
+  if (segments.length === 1 && method === "GET") {
     try {
       // Exactly one GetObject — the whole point of keeping the root current.
       const root = await ensureRoot();
       return jsonResponse(200, {
         root: {id: root.id, label: extractLabel(root.label)},
-        collections: rootCollectionSummaries(root),
+        // Scoped to what the caller holds. The root itself is still named:
+        // it always exists, its label is not a secret, and the UI shows it as
+        // the parent row.
+        collections: rootCollectionSummaries(root).filter((entry) =>
+          canViewCollection(principal, entry.slug),
+        ),
       });
     } catch (error) {
       console.error("List collections failed", error);
@@ -361,9 +393,81 @@ async function handleCollectionsRoute({method, segments}) {
     }
   }
 
+  if (segments.length === 1 && method === "POST") {
+    if (!canManageCollections(principal)) {
+      return jsonResponse(403, {error: "Only an administrator can create a collection"});
+    }
+    try {
+      const body = parseBody(event);
+      const label = typeof body.label === "string" ? body.label.trim() : "";
+      if (!label) {
+        return jsonResponse(400, {error: "A name is required"});
+      }
+      const slug = slugifyCollectionLabel(label);
+      const root = await ensureRoot();
+      if (rootCollectionSummaries(root).some((entry) => entry.slug === slug)) {
+        return jsonResponse(409, {error: `A collection named "${label}" already exists`});
+      }
+      // An empty IIIF Collection, not a placeholder: `items: []` is what the
+      // spec allows and what makes this a real, resolvable document from the
+      // moment it is created.
+      const document = buildCollectionDocument({baseUrl, slug, label, members: []});
+      await writeJson(collectionObjectKey(slug), document);
+
+      const collections = [
+        ...rootCollectionSummaries(root),
+        {slug, label, thumbnail: null, itemCount: 0},
+      ].sort((a, b) => a.label.localeCompare(b.label) || a.slug.localeCompare(b.slug));
+      await writeJson(rootCollectionKey(), buildRootCollectionDocument({baseUrl, collections}));
+
+      return jsonResponse(201, {collection: {slug, label, id: document.id, itemCount: 0, thumbnail: null}, collections});
+    } catch (error) {
+      if (error instanceof CollectionNameError || error.message === "Invalid JSON payload") {
+        return jsonResponse(400, {error: error.message});
+      }
+      console.error("Create collection failed", error);
+      return jsonResponse(500, {error: "Unable to create collection"});
+    }
+  }
+
+  if (segments.length === 2 && segments[1] !== "reindex" && method === "DELETE") {
+    if (!canManageCollections(principal)) {
+      return jsonResponse(403, {error: "Only an administrator can delete a collection"});
+    }
+    const slug = decodeURIComponent(segments[1]);
+    try {
+      const root = await ensureRoot();
+      const summary = rootCollectionSummaries(root).find((entry) => entry.slug === slug);
+      if (!summary) {
+        return jsonResponse(404, {error: "Collection not found"});
+      }
+      // Deliberately refuses a non-empty collection rather than cascading. A
+      // cascade would rewrite every member manifest's partOf — a fan-out write
+      // that is easy to trigger by accident and hard to undo. Emptying it first
+      // is explicit and reversible.
+      if (summary.itemCount) {
+        return jsonResponse(409, {
+          error: `"${summary.label}" still has ${summary.itemCount} work${summary.itemCount === 1 ? "" : "s"}. Remove them from it first.`,
+        });
+      }
+      await s3.send(new DeleteObjectCommand({Bucket: bucket, Key: collectionObjectKey(slug)}));
+      const collections = rootCollectionSummaries(root).filter((entry) => entry.slug !== slug);
+      await writeJson(rootCollectionKey(), buildRootCollectionDocument({baseUrl, collections}));
+      return jsonResponse(200, {deleted: true, collections});
+    } catch (error) {
+      console.error("Delete collection failed", error);
+      return jsonResponse(500, {error: "Unable to delete collection"});
+    }
+  }
+
   if (segments.length === 2 && segments[1] === "reindex") {
     if (method !== "POST") {
       return jsonResponse(405, {error: "Method not allowed"});
+    }
+    // Rebuilds every collection document from the corpus, so it stays with
+    // admins even though an editor can change an individual work's membership.
+    if (!canReindex(principal)) {
+      return jsonResponse(403, {error: "Only an administrator can rebuild the collection index"});
     }
     try {
       return jsonResponse(200, await reindexCollections());
@@ -373,18 +477,28 @@ async function handleCollectionsRoute({method, segments}) {
     }
   }
 
+  if (segments.length === 1) {
+    return jsonResponse(405, {error: "Method not allowed"});
+  }
+
   return jsonResponse(404, {error: "Unknown endpoint"});
 }
 
-// Full rebuild from the manifest corpus, mirroring POST /search/reindex —
-// including the prune, without which deleted memberships resurrect.
+// Full rebuild, mirroring POST /search/reindex.
 //
-// This is the repair story that makes manifest-authoritative safe: every
-// collection document is a pure function of the manifests, so partial writes,
-// hand-edits and base-URL changes are all fixed by one button.
+// MEMBERSHIP is still a pure function of the manifest corpus — that is what
+// makes partial writes, hand-edits and base-URL changes repairable by one
+// button. EXISTENCE is not: an admin-created collection can legitimately have
+// no members, and nothing in the manifests records it. So this merges the
+// corpus with the collections the root already declares, and prunes only what
+// neither source knows about.
 async function reindexCollections() {
   const startedAt = Date.now();
-  const summaries = await listManifestSummaries({s3, bucket});
+  const [summaries, root] = await Promise.all([
+    listManifestSummaries({s3, bucket}),
+    ensureRoot(),
+  ]);
+  const declared = new Map(rootCollectionSummaries(root).map((entry) => [entry.slug, entry.label]));
 
   // One pass. listManifestSummaries has already read every manifest, and the
   // summary carries partOf and thumbnail, so re-reading the corpus here would
@@ -403,6 +517,12 @@ async function reindexCollections() {
     }
   }
 
+  // Declared-but-empty collections are real and must survive the rebuild. They
+  // contribute no members, so they fall straight through to items: [].
+  for (const slug of declared.keys()) {
+    if (!bySlug.has(slug)) bySlug.set(slug, {labels: [], members: []});
+  }
+
   const collections = [];
   const documents = [];
   for (const [slug, group] of bySlug) {
@@ -412,7 +532,7 @@ async function reindexCollections() {
     if (distinct.size > 1) {
       console.warn(`Collection ${slug} has conflicting labels: ${[...distinct].join(" | ")}`);
     }
-    const label = canonical?.label || slug;
+    const label = canonical?.label || declared.get(slug) || slug;
     const members = [...group.members].sort(
       (a, b) => a.label.localeCompare(b.label) || a.manifestId.localeCompare(b.manifestId),
     );
@@ -469,7 +589,29 @@ async function pruneCollections(keep) {
   return deleted;
 }
 
+// Files a freshly created work into collections. Shared by the create and the
+// import route so both apply membership the same way; `previous` is empty by
+// construction, since the work did not exist a moment ago.
+async function fileNewWork({identifier, manifest, labels, writeManifest}) {
+  const desired = parseDesiredCollections({collections: labels || []});
+  if (!desired.length) return manifest;
+  const root = await ensureRoot();
+  const canonical = canonicalizeCollectionLabels(desired, root);
+  const next = applyCollections(manifest, {baseUrl, collections: canonical});
+  await writeManifest(identifier, next);
+  await reconcileQuietly({manifest: next, desired: canonical, previous: [], root});
+  return next;
+}
+
+// The slugs a create request is asking for, so the permission check can run
+// before anything is written.
+function desiredCollectionSlugs(labels) {
+  return parseDesiredCollections({collections: labels || []}).map((entry) => entry.slug);
+}
+
 module.exports = {
+  fileNewWork,
+  desiredCollectionSlugs,
   refreshShowcase,
   applyReconciliation,
   reconcileManifestCollections,

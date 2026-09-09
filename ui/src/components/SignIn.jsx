@@ -292,7 +292,7 @@ export default function SignIn({onSignedIn}) {
           </Flex>
         )}
         <Flex direction="column" gap="1" mb="5">
-          <Heading as="h1" size="7" className="app-wordmark">Understory</Heading>
+          <Heading as="h1" size="6" className="app-wordmark">Understory</Heading>
           <Text as="p" size="2" color="gray">{form.description || "Sign in to manage your works."}</Text>
         </Flex>
 

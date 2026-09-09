@@ -18,15 +18,24 @@ import '@fontsource/ibm-plex-mono/600.css'
 import './index.css'
 import App from './App.jsx'
 import AuthGate from './AuthGate.jsx'
+import AppShell from './components/AppShell.jsx'
+import CollectionsPage from './components/CollectionsPage.jsx'
+import UsersPage from './components/UsersPage.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <Theme appearance="light" accentColor="iris" grayColor="mauve" scaling="110%">
       <BrowserRouter>
         <AuthGate>
-          {({ signOut }) => (
+          {({ signOut, username }) => (
             <Routes>
-              <Route path="/works/:workId?" element={<App signOut={signOut} />} />
+              {/* Layout route: the header, section menu and page container are
+                  shared by every signed-in section. */}
+              <Route element={<AppShell signOut={signOut} username={username} />}>
+                <Route path="/works/:workId?" element={<App />} />
+                <Route path="/collections" element={<CollectionsPage />} />
+                <Route path="/users" element={<UsersPage />} />
+              </Route>
               <Route path="*" element={<Navigate to="/works" replace />} />
             </Routes>
           )}

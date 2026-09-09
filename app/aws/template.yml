@@ -129,6 +129,26 @@ Resources:
           RequireNumbers: true
           RequireSymbols: false
 
+  # Roles are Cognito Groups so they ride in the ID token as `cognito:groups`
+  # and the API can authorize with no extra lookup. Precedence is Cognito's own
+  # tie-breaker; the app resolves admin over editor itself, but keeping these
+  # consistent avoids surprises for anything else reading the pool.
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      GroupName: admin
+      Description: "Full access, including managing users and collection grants"
+      Precedence: 0
+
+  EditorGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      GroupName: editor
+      Description: "Full control of works inside granted collections"
+      Precedence: 10
+
   CognitoUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
@@ -237,6 +257,9 @@ Resources:
           - "@aws-sdk/*"
     Properties:
       FunctionName: !Sub "${AWS::StackName}-manifest-api"
+      Environment:
+        Variables:
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
       # The import walk hands off to itself when a very large work outruns one
       # invocation's time budget. Lambda's recursive-loop detection treats that
       # as a runaway and TERMINATES the chain after ~16 hops — silently, with
@@ -285,6 +308,18 @@ Resources:
               Action:
                 - events:PutEvents
               Resource: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
+            # The Users section. Scoped to this stack's own pool, and to the
+            # group/user calls it actually makes — notably NOT AdminCreateUser
+            # or AdminDeleteUser: accounts stay a console/CLI operation.
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsers
+                - cognito-idp:ListGroups
+                - cognito-idp:ListUsersInGroup
+                - cognito-idp:CreateGroup
+                - cognito-idp:AdminAddUserToGroup
+                - cognito-idp:AdminRemoveUserFromGroup
+              Resource: !GetAtt CognitoUserPool.Arn
       Events:
         GetManifests:
           Type: HttpApi
@@ -374,6 +409,30 @@ Resources:
             ApiId: !Ref ManifestHttpApi
             Path: /collections/reindex
             Method: POST
+        CreateCollection:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections
+            Method: POST
+        DeleteCollection:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/{slug}
+            Method: DELETE
+        ListUsers:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /users
+            Method: GET
+        UpdateUser:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /users/{username}
+            Method: PUT
 
   SearchFunction:
     Type: AWS::Serverless::Function

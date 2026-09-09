@@ -1,9 +1,9 @@
 import {useCallback, useEffect, useId, useMemo, useRef, useState} from "react";
 import {Link as RouterLink, useNavigate, useParams} from "react-router-dom";
-import {Amplify} from "aws-amplify";
-import {fetchAuthSession} from "aws-amplify/auth";
 import AssetThumbnails from "./components/AssetThumbnails";
 import AssetDropzone from "./components/AssetDropzone";
+import PageHeading from "./components/PageHeading";
+import {ROLE_ADMIN, useSession} from "./lib/session";
 import {buildThumbnailUrlFromInfo} from "./lib/canvasAssets";
 import CloverViewer from "@samvera/clover-iiif/viewer";
 import {CLOVER_OPTIONS, CLOVER_THEME} from "./cloverTheme";
@@ -54,80 +54,15 @@ import {
   Progress,
   SegmentedControl,
 } from "@radix-ui/themes";
+import {
+  COLLECTION_API_BASE,
+  MANIFEST_API_BASE,
+  SEARCH_API_BASE,
+  apiFetch,
+  searchApiUrl,
+} from "./lib/api";
 import "@radix-ui/themes/styles.css";
 import "./App.css";
-
-const MANIFEST_API_BASE = (import.meta.env.VITE_MANIFEST_API_URL || "").replace(/\/$/, "");
-const SEARCH_API_BASE = (import.meta.env.VITE_SEARCH_API_URL || "").replace(/\/$/, "");
-// VITE_MANIFEST_API_URL already ends in /manifests, so the collections
-// vocabulary is a sibling endpoint rather than a child of it. The fallback
-// derives one so the feature still works against a stack deployed before the
-// variable existed.
-const COLLECTION_API_BASE = (
-  import.meta.env.VITE_COLLECTION_API_URL ||
-  (/\/manifests$/.test(MANIFEST_API_BASE) ? MANIFEST_API_BASE.replace(/\/manifests$/, "/collections") : "")
-).replace(/\/$/, "");
-const STORAGE_BUCKET = import.meta.env.VITE_STORAGE_BUCKET || "";
-const SOURCE_BUCKET = import.meta.env.VITE_SOURCE_BUCKET || "";
-const STORAGE_REGION = import.meta.env.VITE_STORAGE_REGION || import.meta.env.VITE_AWS_REGION || "";
-const STORAGE_IDENTITY_POOL_ID = import.meta.env.VITE_STORAGE_IDENTITY_POOL_ID || "";
-const COGNITO_USER_POOL_ID = import.meta.env.VITE_COGNITO_USER_POOL_ID || "";
-const COGNITO_CLIENT_ID = import.meta.env.VITE_COGNITO_CLIENT_ID || "";
-
-if (STORAGE_BUCKET && STORAGE_REGION) {
-  Amplify.configure({
-    Auth: {
-      Cognito: {
-        userPoolId: COGNITO_USER_POOL_ID,
-        userPoolClientId: COGNITO_CLIENT_ID,
-        identityPoolId: STORAGE_IDENTITY_POOL_ID,
-      },
-    },
-    Storage: {
-      S3: {
-        bucket: STORAGE_BUCKET,
-        region: STORAGE_REGION,
-      },
-    },
-  });
-}
-
-async function authHeaders() {
-  try {
-    const { tokens } = await fetchAuthSession();
-    return tokens?.idToken ? { Authorization: tokens.idToken.toString() } : {};
-  } catch {
-    return {};
-  }
-}
-
-// Every call against our API repeats the same four steps: attach the Cognito
-// token, send JSON, tolerate a non-JSON body, and throw the API's own error
-// message. Doing it once keeps the error contract identical everywhere.
-async function apiFetch(url, {method = "GET", body, errorMessage = "Request failed"} = {}) {
-  if (!url) {
-    throw new Error("Work API unavailable");
-  }
-  const headers = await authHeaders();
-  if (body !== undefined) {
-    headers["Content-Type"] = "application/json";
-  }
-  const response = await fetch(url, {
-    method,
-    headers,
-    ...(body !== undefined ? {body: JSON.stringify(body)} : {}),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || errorMessage);
-  }
-  return data;
-}
-
-function searchApiUrl(query) {
-  if (!SEARCH_API_BASE) return null;
-  return `${SEARCH_API_BASE}?q=${encodeURIComponent(query)}`;
-}
 
 // The search index only stores the manifest's own id (its full URL), not this app's
 // route — parse the identifier back out of the known presentation/manifest/<id>/manifest.json
@@ -781,15 +716,21 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
   }, [vocabulary, query, draft]);
 
   // Adding is one rule, used by Enter, by a click, and by Check — so all three
-  // land in the same place. A name that normalizes onto a collection we already
-  // know adopts that collection's own spelling, so "campus maps" cannot fork
-  // "Campus Maps"; anything else is simply new.
+  // land in the same place.
+  //
+  // SELECTION ONLY: a name that does not resolve to an existing collection is
+  // ignored here rather than created. Collections are instantiated on the
+  // Collections screen by an admin and nowhere else; the API refuses an unknown
+  // name too, so this is the UI half of one rule rather than a rule of its own.
+  // A name that normalizes onto a known collection still adopts that
+  // collection's spelling, so "campus maps" cannot fork "Campus Maps".
   const withCollection = (list, label) => {
     const value = (label || "").trim();
     const slug = collectionSlug(value);
     if (!slug || list.some((name) => collectionSlug(name) === slug)) return list;
     const known = vocabulary.find((entry) => entry.slug === slug);
-    return [...list, known ? known.label : value];
+    if (!known) return list;
+    return [...list, known.label];
   };
 
   const typedSlug = collectionSlug(query);
@@ -798,6 +739,11 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
   // state. Clamped so a stale index cannot run past the list.
   const highlighted = activeIndex >= 0 && activeIndex < options.length ? activeIndex : -1;
   const showList = listOpen && options.length > 0;
+  // With creation gone, an unmatched query has to say so — otherwise typing a
+  // new name just does nothing and reads as a broken field.
+  const showNoMatch =
+    listOpen && options.length === 0 && Boolean(typedSlug) &&
+    !vocabulary.some((entry) => entry.slug === typedSlug);
   const duplicate = Boolean(typedSlug) && draft.some((name) => collectionSlug(name) === typedSlug);
 
   // Text still sitting in the input counts as part of the edit: Check commits it
@@ -826,7 +772,15 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
   };
 
   const addCollection = (label) => {
-    if (!collectionSlug(label)) return;
+    const slug = collectionSlug(label);
+    if (!slug) return;
+    if (!vocabulary.some((entry) => entry.slug === slug)) {
+      setError(
+        `There is no collection called “${label.trim()}”. An administrator can add one on the Collections screen.`,
+      );
+      return;
+    }
+    setError(null);
     setDraft((prev) => withCollection(prev, label));
     setQuery("");
     setActiveIndex(-1);
@@ -884,7 +838,7 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
       if (showList && highlighted >= 0) {
         addCollection(options[highlighted].label);
       } else if (query.trim()) {
-        // Creates it if it is new, joins it if it is not.
+        // Joins an existing collection, or explains that it does not exist.
         addCollection(query);
       } else {
         handleSave();
@@ -1009,6 +963,14 @@ function WorkCollectionsField({savedCollections, vocabulary, onSave}) {
             onFocus={() => setListOpen(true)}
             onKeyDown={handleKeyDown}
           />
+          {showNoMatch && (
+            <ul className="collections-listbox" aria-live="polite">
+              <li className="collections-option collections-option--empty">
+                No collection called “{query.trim()}”. An administrator adds collections on the
+                Collections screen.
+              </li>
+            </ul>
+          )}
           {showList && (
             <ul id={listboxId} role="listbox" aria-label="Collections" className="collections-listbox">
               {options.map((option, index) => (
@@ -1458,6 +1420,8 @@ function AddWorkModal({
   onSelectStep,
   onBack,
   createForm,
+  newWorkCollections,
+  requireCollection,
   onCreateChange,
   onCreateSubmit,
   createSubmitting,
@@ -1535,6 +1499,14 @@ function AddWorkModal({
                     placeholder="e.g. 1973 yearbook"
                   />
                 </label>
+                {requireCollection && (
+                  <NewWorkCollectionField
+                    options={newWorkCollections}
+                    value={createForm.collection}
+                    disabled={createSubmitting}
+                    onChange={(value) => onCreateChange("collection", value)}
+                  />
+                )}
                 {createError && (
                   <Callout.Root color="red" size="1">
                     <Callout.Text>{createError}</Callout.Text>
@@ -1639,6 +1611,14 @@ function AddWorkModal({
                   </Flex>
                 </Flex>
               </Card>
+              {requireCollection && (
+                <NewWorkCollectionField
+                  options={newWorkCollections}
+                  value={createForm.collection}
+                  disabled={importConfirming}
+                  onChange={(value) => onCreateChange("collection", value)}
+                />
+              )}
               {importError && (
                 <Callout.Root color="red" size="1">
                   <Callout.Text>{importError}</Callout.Text>
@@ -1685,6 +1665,32 @@ function AddWorkModal({
   );
 }
 
+// An editor must file a new work into a collection they hold: a work in no
+// collection is out of their reach the moment it exists, so the API refuses to
+// create one. Admins may leave it uncollected, and never see this.
+function NewWorkCollectionField({options, value, onChange, disabled}) {
+  return (
+    <label>
+      <Text as="div" size="2" weight="medium" mb="1">
+        Collection
+      </Text>
+      <Select.Root value={value || ""} onValueChange={onChange} disabled={disabled} required>
+        <Select.Trigger placeholder="Choose a collection…" />
+        <Select.Content>
+          {options.map((option) => (
+            <Select.Item key={option.slug} value={option.slug}>
+              {option.label}
+            </Select.Item>
+          ))}
+        </Select.Content>
+      </Select.Root>
+      <Text as="div" size="1" color="gray" mt="1">
+        You can only create works in collections you have been granted.
+      </Text>
+    </label>
+  );
+}
+
 function WorksListPanel({
   manifestApiAvailable,
   manifestError,
@@ -1695,6 +1701,12 @@ function WorksListPanel({
   onDeleteManifest,
 }) {
   const searchApiAvailable = Boolean(SEARCH_API_BASE);
+  const session = useSession();
+  const isAdmin = session.role === ROLE_ADMIN;
+  // The API scopes reads to the caller's grants, so someone with neither the
+  // admin role nor a single grant gets an empty list. Say why, rather than
+  // showing a bare table that looks like the corpus is empty.
+  const noAccess = !isAdmin && session.collections.length === 0;
   const [collectionFilter, setCollectionFilter] = useState(COLLECTION_FILTER_ALL);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState(null);
@@ -1814,6 +1826,7 @@ function WorksListPanel({
 
   return (
     <Flex direction="column" gap="5">
+      <PageHeading>Works</PageHeading>
       <Card size="3" className="panel manifest-panel">
         <Flex justify="between" align="center" gap="3" mb="4">
           <TextField.Root
@@ -1823,21 +1836,25 @@ function WorksListPanel({
             value={searchQuery}
             onChange={(evt) => setSearchQuery(evt.target.value)}
           />
-          <Button
-            type="button"
-            size="3"
-            variant="soft"
-            onClick={handleReindex}
-            disabled={!searchApiAvailable || reindexing}
-            loading={reindexing}
-          >
-            Publish search index
-          </Button>
+          {/* Admin-only server-side; hiding it keeps the row from offering an
+              action that can only come back 403. */}
+          {isAdmin && (
+            <Button
+              type="button"
+              size="3"
+              variant="soft"
+              onClick={handleReindex}
+              disabled={!searchApiAvailable || reindexing}
+              loading={reindexing}
+            >
+              Publish search index
+            </Button>
+          )}
           <Button
             type="button"
             size="3"
             onClick={onOpenManifestModal}
-            disabled={!manifestApiAvailable}
+            disabled={!manifestApiAvailable || noAccess}
           >
             <PlusIcon /> Add
           </Button>
@@ -1847,6 +1864,14 @@ function WorksListPanel({
             <Callout.Root color="red" size="1" mb="3">
               <Callout.Text>
                 Work API URL is not configured. Update VITE_MANIFEST_API_URL to point at the deployed endpoint.
+              </Callout.Text>
+            </Callout.Root>
+          )}
+          {noAccess && (
+            <Callout.Root color="gray" size="1" mb="3">
+              <Callout.Text>
+                You don&rsquo;t have access to any collections yet, so there are no works to show. An
+                administrator can grant you access from the Users section.
               </Callout.Text>
             </Callout.Root>
           )}
@@ -1985,8 +2010,8 @@ function WorkDetailPanel({
             </RouterLink>
           </Button>
           {/* The work title is edited here rather than in the Metadata tab —
-              it is the page's own heading. Its size lives in CSS because the
-              requested 2x of the old size-6 falls between Radix's steps. */}
+              it is the page's own heading, and shares .page-heading with every
+              section heading so the two treatments cannot drift. */}
           <InlineTextEditor
             as="h1"
             value={manifestDetail.label || ""}
@@ -1995,7 +2020,7 @@ function WorkDetailPanel({
             ariaLabel="Save title"
             textProps={{weight: "bold"}}
             fieldSize="3"
-            className="work-title-editable"
+            className="page-heading work-title-editable"
           />
         </Flex>
       )}
@@ -2109,7 +2134,8 @@ function WorkDetailPanel({
   );
 }
 
-export default function App({ signOut }) {
+// The works section. Page chrome (header, nav menu, container) lives in AppShell.
+export default function App() {
   const {workId} = useParams();
   const navigate = useNavigate();
   const selectedManifestId = workId ? decodeURIComponent(workId) : null;
@@ -2120,6 +2146,12 @@ export default function App({ signOut }) {
     },
     [navigate],
   );
+
+  const session = useSession();
+  // Admins may create an uncollected work; anyone else must name a collection
+  // they hold. The API enforces this — the field just makes it possible to
+  // comply, and the option list is what they are actually allowed to pick.
+  const requireCollection = session.role !== ROLE_ADMIN;
 
   const manifestApiAvailable = Boolean(MANIFEST_API_BASE);
   const [manifests, setManifests] = useState([]);
@@ -2138,7 +2170,7 @@ export default function App({ signOut }) {
   const [importPollGeneration, setImportPollGeneration] = useState(0);
   const [isManifestModalOpen, setManifestModalOpen] = useState(false);
   const [manifestModalStep, setManifestModalStep] = useState("choose");
-  const [manifestForm, setManifestForm] = useState({label: ""});
+  const [manifestForm, setManifestForm] = useState({label: "", collection: ""});
   const [manifestFormError, setManifestFormError] = useState(null);
   const [manifestFormSubmitting, setManifestFormSubmitting] = useState(false);
   const [importUrl, setImportUrl] = useState("");
@@ -2152,6 +2184,11 @@ export default function App({ signOut }) {
   const [collections, setCollections] = useState([]);
   const [canvasSaving, setCanvasSaving] = useState(false);
   const [canvasActionError, setCanvasActionError] = useState(null);
+
+  const newWorkCollections = useMemo(() => {
+    const bySlug = new Map(collections.map((entry) => [entry.slug, entry.label]));
+    return session.collections.map((slug) => ({slug, label: bySlug.get(slug) || slug}));
+  }, [collections, session.collections]);
 
   const manifestApiUrl = useCallback(
     (path = "") => {
@@ -2264,7 +2301,7 @@ export default function App({ signOut }) {
   const handleOpenManifestModal = () => {
     if (!manifestApiAvailable) return;
     setManifestModalStep("choose");
-    setManifestForm({label: ""});
+    setManifestForm({label: "", collection: ""});
     setManifestFormError(null);
     setImportUrl("");
     setImportPreview(null);
@@ -2288,11 +2325,23 @@ export default function App({ signOut }) {
     }
   };
 
+  // The API resolves collections by label, so send the label rather than the
+  // slug the picker is keyed on.
+  const newWorkCollectionBody = () => {
+    if (!manifestForm.collection) return {};
+    const chosen = newWorkCollections.find((entry) => entry.slug === manifestForm.collection);
+    return {collections: [chosen?.label || manifestForm.collection]};
+  };
+
   const handleManifestSubmit = async (event) => {
     event.preventDefault();
     const label = manifestForm.label.trim();
     if (!label) {
       setManifestFormError("A title is required");
+      return;
+    }
+    if (requireCollection && !manifestForm.collection) {
+      setManifestFormError("Choose a collection for this work");
       return;
     }
     setManifestFormSubmitting(true);
@@ -2304,7 +2353,7 @@ export default function App({ signOut }) {
       }
       const data = await apiFetch(endpoint, {
         method: "POST",
-        body: {label},
+        body: {label, ...newWorkCollectionBody()},
         errorMessage: "Unable to create work",
       });
       await refreshManifests();
@@ -2347,6 +2396,10 @@ export default function App({ signOut }) {
 
   const handleImportConfirm = async () => {
     if (!importPreview) return;
+    if (requireCollection && !manifestForm.collection) {
+      setImportError("Choose a collection for this work");
+      return;
+    }
     setImportConfirming(true);
     setImportError(null);
     try {
@@ -2356,7 +2409,11 @@ export default function App({ signOut }) {
       }
       const data = await apiFetch(endpoint, {
         method: "POST",
-        body: {sourceUrl: importPreview.sourceUrl, manifest: importPreview.manifest},
+        body: {
+          sourceUrl: importPreview.sourceUrl,
+          manifest: importPreview.manifest,
+          ...newWorkCollectionBody(),
+        },
         errorMessage: "Unable to import that manifest",
       });
       await refreshManifests();
@@ -2631,87 +2688,63 @@ export default function App({ signOut }) {
 
   return (
     <>
-      {/* Full-bleed purple utility bar, mirroring the one at the top of
-          library.northwestern.edu. Its contents align to the same container
-          width as the page below it. */}
-      <header className="nu-header">
-        <div className="nu-header-inner">
-          <a className="nu-wordmark" href="https://www.northwestern.edu/">
-            {/* The wordmark is a background image, so keep the name available to
-                screen readers — same approach the Northwestern sites use. */}
-            <span className="nu-wordmark-label">Northwestern</span>
-          </a>
-          {signOut && (
-            <button type="button" className="nu-header-action" onClick={signOut}>
-              Sign out
-            </button>
-          )}
-        </div>
-      </header>
-      <main className="layout">
-      <div className="layout-container">
-        <Flex direction="column" gap="2" className="layout-header">
-          <Heading as="h1" size="7" className="app-wordmark">Understory</Heading>
-        </Flex>
-        <Box pt="2">
-          {selectedManifestId ? (
-            <WorkDetailPanel
-              manifestDetail={manifestDetail}
-              manifestDetailLoading={manifestDetailLoading}
-              manifestDetailError={manifestDetailError}
-              viewerRevision={viewerRevision}
-              importStatus={importStatus}
-              importStale={importStale}
-              onResumeImport={handleResumeImport}
-              onAttachAssets={handleAttachAssets}
-              canAddCanvas={canAddCanvas}
-              onMoveCanvas={handleMoveCanvas}
-              onRemoveCanvas={handleRemoveCanvas}
-              onRenameCanvas={handleRenameCanvas}
-              onSaveTitle={handleSaveTitle}
-              onSaveSummary={handleSaveSummary}
-              onSaveMetadata={handleSaveMetadata}
-              onSaveBehavior={handleSaveBehavior}
-              collections={collections}
-              onSaveCollections={persistWorkCollections}
-              canvasSaving={canvasSaving}
-              canvasActionError={canvasActionError}
-              disableAddReason={disableAddReason}
-            />
-          ) : (
-            <WorksListPanel
-              manifestApiAvailable={manifestApiAvailable}
-              manifestError={manifestError}
-              manifestLoading={manifestLoading}
-              manifests={manifests}
-              selectedManifestId={selectedManifestId}
-              onOpenManifestModal={handleOpenManifestModal}
-              onDeleteManifest={handleDeleteManifest}
-            />
-          )}
-        </Box>
-        <AddWorkModal
-          open={isManifestModalOpen}
-          onClose={handleCloseManifestModal}
-          step={manifestModalStep}
-          onSelectStep={setManifestModalStep}
-          onBack={handleModalBack}
-          createForm={manifestForm}
-          onCreateChange={handleManifestFieldChange}
-          onCreateSubmit={handleManifestSubmit}
-          createSubmitting={manifestFormSubmitting}
-          createError={manifestFormError}
-          importUrl={importUrl}
-          onImportUrlChange={setImportUrl}
-          onImportFetch={handleImportFetch}
-          importFetching={importFetching}
-          importError={importError}
-          importPreview={importPreview}
-          onImportConfirm={handleImportConfirm}
-          importConfirming={importConfirming}
+      {selectedManifestId ? (
+        <WorkDetailPanel
+          manifestDetail={manifestDetail}
+          manifestDetailLoading={manifestDetailLoading}
+          manifestDetailError={manifestDetailError}
+          viewerRevision={viewerRevision}
+          importStatus={importStatus}
+          importStale={importStale}
+          onResumeImport={handleResumeImport}
+          onAttachAssets={handleAttachAssets}
+          canAddCanvas={canAddCanvas}
+          onMoveCanvas={handleMoveCanvas}
+          onRemoveCanvas={handleRemoveCanvas}
+          onRenameCanvas={handleRenameCanvas}
+          onSaveTitle={handleSaveTitle}
+          onSaveSummary={handleSaveSummary}
+          onSaveMetadata={handleSaveMetadata}
+          onSaveBehavior={handleSaveBehavior}
+          collections={collections}
+          onSaveCollections={persistWorkCollections}
+          canvasSaving={canvasSaving}
+          canvasActionError={canvasActionError}
+          disableAddReason={disableAddReason}
         />
-      </div>
-      </main>
+      ) : (
+        <WorksListPanel
+          manifestApiAvailable={manifestApiAvailable}
+          manifestError={manifestError}
+          manifestLoading={manifestLoading}
+          manifests={manifests}
+          selectedManifestId={selectedManifestId}
+          onOpenManifestModal={handleOpenManifestModal}
+          onDeleteManifest={handleDeleteManifest}
+        />
+      )}
+      <AddWorkModal
+        open={isManifestModalOpen}
+        onClose={handleCloseManifestModal}
+        step={manifestModalStep}
+        onSelectStep={setManifestModalStep}
+        onBack={handleModalBack}
+        createForm={manifestForm}
+        newWorkCollections={newWorkCollections}
+        requireCollection={requireCollection}
+        onCreateChange={handleManifestFieldChange}
+        onCreateSubmit={handleManifestSubmit}
+        createSubmitting={manifestFormSubmitting}
+        createError={manifestFormError}
+        importUrl={importUrl}
+        onImportUrlChange={setImportUrl}
+        onImportFetch={handleImportFetch}
+        importFetching={importFetching}
+        importError={importError}
+        importPreview={importPreview}
+        onImportConfirm={handleImportConfirm}
+        importConfirming={importConfirming}
+      />
     </>
   );
 }

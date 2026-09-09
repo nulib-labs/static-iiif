@@ -6,11 +6,61 @@ This project generates static IIIF Image 3.0 API resources and IIIF Presentation
 The project metadata CSV → manifest generation flow described in earlier iterations is still a future goal; today the manifest API supports single-manifest CRUD plus the Collections routes described below.
 
 ## UI Structure
-The dashboard (`ui/src/App.jsx`) is organized into tabs:
-- **Works** — create/manage IIIF Presentation manifests (the `presentation/manifest/` prefix in the IIIF bucket) and preview the selected manifest via Clover Viewer.
-- **Assets** — browse and upload files in the `image/` prefix of the **source** bucket (not the IIIF/output bucket) via the Amplify Storage Browser. Uploading here is what feeds the `iiif-image` Lambda's pipeline. The Cognito authenticated role's IAM policy scopes `s3:PutObject`/`s3:GetObject` to `image/*` only — the bucket root is intentionally not writable (or listable) from the UI.
 
-Future: a third tab/prefix for audio/video assets (A/V) is anticipated but out of scope for now — don't build it until it's explicitly requested.
+Routes are declared in `ui/src/main.jsx`. Everything signed-in renders through a
+**layout route**, `AppShell` (`ui/src/components/AppShell.jsx`), which owns the
+purple Northwestern bar, the page container, and the band carrying the
+"Understory" wordmark and the section switcher. Section components render into
+its `<Outlet />` and must not draw chrome of their own.
+
+The purple bar carries the Northwestern mark on the left and the session strip
+on the right — `Signed in as <email> | Sign out`, with sign-out as an underlined
+link rather than a button, because it is site chrome and should not compete with
+the page's own controls. The email comes from the ID token's `email` claim
+(`AuthGate`): the pool sets `UsernameAttributes: [email]`, so Cognito's own
+`username` is an opaque UUID, and `signInDetails.loginId` does not survive a
+reload on a cached session.
+
+| Route | Component | State |
+|---|---|---|
+| `/works/:workId?` | `App` (`ui/src/App.jsx`) | Built |
+| `/collections` | `CollectionsPage` | Stub — read-only list |
+| `/users` | `UsersPage` | Built — admin only |
+
+Anything else redirects to `/works`.
+
+- **Works** — create/manage IIIF Presentation manifests (the
+  `presentation/manifest/` prefix in the IIIF bucket) and preview the selected
+  manifest via Clover Viewer. Assets are uploaded per-work through
+  `AssetDropzone`, which writes to the `image/` prefix of the **source** bucket
+  (not the IIIF/output bucket) — that upload is what feeds the `iiif-image`
+  Lambda's pipeline. The Cognito authenticated role's IAM policy scopes
+  `s3:PutObject`/`s3:GetObject` to `image/*` only; the bucket root is
+  intentionally not writable (or listable) from the UI.
+- **Collections** — see the Collections section below. Read-only today: it lists
+  the root collection's members. There is deliberately no create/rename/delete
+  here, because membership is authoritative in each manifest's `partOf` and a
+  collection only exists while a work points at it.
+- **Users** — lists the Cognito user pool and assigns roles and collection
+  grants. Admin-only, hidden from the section menu for everyone else. See
+  "Roles and permissions" below.
+
+Sections are horizontal `NavLink`s on the wordmark line. With three
+destinations, a dropdown cost a click and said less than simply showing them.
+`NavLink` marks itself active for a path *and everything under it*, so `/works`
+stays lit on `/works/:workId` with no path matching in the shell, and it sets
+`aria-current` for free. The active underline is painted transparent on every
+link so becoming active never changes a link's height.
+
+Adding a section means one entry in `SECTIONS` plus one `<Route>`.
+
+`ui/src/lib/api.js` holds the Amplify configuration, the deployed endpoint bases
+and `apiFetch`. It lives outside `App.jsx` so a section that is not Works can
+call the API without importing the whole works UI. Importing it is what
+configures Amplify, so every `apiFetch` caller is configured by construction.
+
+Future: a prefix for audio/video assets (A/V) is anticipated but out of scope for
+now — don't build it until it's explicitly requested.
 
 ## Search index
 The **Works** tab also has a "Publish search index" button and a search box. Clicking
@@ -263,12 +313,34 @@ Presentation 3.0 Collection documents in the IIIF bucket:
 | Leaf | `presentation/collection/{slug}/collection.json` |
 | Root | `presentation/collection/index/collection.json` |
 
-**Membership is authoritative in each manifest's `partOf`; the collection
-documents are a derived projection.** That is the load-bearing decision:
+**Membership is authoritative in each manifest's `partOf`. EXISTENCE is
+authoritative in the root document.** Those are two different questions, and
+splitting them is the load-bearing decision:
 
-- There is no registry anywhere in this app (`GET /manifests` is a live prefix
-  scan), and this keeps it that way.
-- "A collection with no members ceases to exist" falls out for free.
+- *Which works are in a collection* is still derived from the manifests, so
+  `POST /collections/reindex` can repair it from the corpus alone.
+- *Which collections exist* is not derivable — an admin-created collection can
+  legitimately have no members and nothing in the manifests records it. The root
+  document is the register. Reindex therefore **merges**: corpus membership
+  union root-declared existence, pruning only what neither knows.
+
+Collections are created and deleted **only by an admin, only on the Collections
+screen** (`POST /collections`, `DELETE /collections/{slug}`). Nothing else
+instantiates one:
+
+- The Linking tab's combobox is selection-only. `handleManifestCollectionsRoute`
+  rejects a slug the root does not already list, so a work can never conjure a
+  collection as a side effect of being saved. (This reverses the earlier
+  "hit enter and it creates" behaviour.)
+- Emptying a collection does **not** delete it — the leaf is rewritten with
+  `items: []`, which the spec permits. This reverses the original "a collection
+  with no items ceases to exist" rule.
+- `DELETE` refuses a non-empty collection rather than cascading. A cascade would
+  rewrite every member's `partOf` — a fan-out write that is easy to trigger by
+  accident and hard to undo.
+
+Older notes elsewhere may still describe the auto-delete rule; this section is
+the current one.
 - `POST /collections/reindex` is a *pure function of the manifest corpus*, so
   any projection damage — a partial write, a hand-edit, a base-URL change — is
   repaired by one call. Under the reverse design a lost object would be
@@ -330,12 +402,168 @@ timeout as `POST /search/reindex`; at a few thousand works it will 504 at the
 gateway while the Lambda runs on. The escape hatch is the self-invoke +
 status-object pattern `importAssets.js` already uses.
 
+## Roles and permissions
+
+Two roles, both Cognito Groups, assigned independently — they are a matrix, not
+a ladder. A user can hold both; `admin` simply wins wherever they disagree.
+
+| Group | Can |
+|---|---|
+| `admin` | Everything, including the Users section and `POST /collections/reindex` |
+| `editor` | Full control of works inside the collections granted to them |
+| *(none)* | Sign in and read. No writes at all. |
+
+The Users screen shows a third checkbox, **User**, always checked and always
+disabled. It is not a group: it is what holding none of them means, and nothing
+is written for it. `normalizeRoles` drops it if a client ever sends it.
+
+A **grant** is a group named `collection:<slug>`. Colon, not hyphen: a slug
+contains hyphens, so a hyphen separator would be ambiguous, and Cognito's
+GroupName pattern permits Unicode punctuation.
+
+**Why groups and not a permissions document.** Group membership rides in the ID
+token as `cognito:groups`, so every authorization decision is a pure function of
+claims the JWT authorizer has already verified — no lookup, no store to keep
+consistent with Cognito, nothing to cache or invalidate.
+
+The cost is the one thing that will confuse you: **a grant does not take effect
+until the user's token is reissued** — their next sign-in, or within the hour
+when it refreshes. The Users page says so after every save. Don't "fix" this by
+adding a server-side lookup; that trades the whole benefit for an edge case.
+
+### The rules
+
+All of it is in `app/shared/access.js`, which is pure and unit-tested
+(`app/shared/__tests__/access.test.js`). Routes call it; they never re-derive a
+decision themselves.
+
+- **Reads are scoped too.** You see the collections you hold and the works
+  inside them; no role and no grant means an empty app. Every enumerating
+  endpoint filters: `GET /manifests`, `GET /manifests/{id}`,
+  `GET /manifests/{id}/import-status`, `GET /collections`, and `GET /search`.
+- **A grant without a role is read-only sight** of that collection. That is how
+  you show someone a collection without letting them change it, and it falls out
+  of the model rather than needing a third role.
+
+### What read scoping does and does not do
+
+It bounds what the **dashboard enumerates**. It does not make anything secret.
+
+The IIIF bucket is world-readable on purpose (`Principal: "*"`, `s3:GetObject`)
+— Clover fetches manifests unauthenticated, and public resolvability is the
+product. Verified anonymously: an individual manifest and any collection
+document return 200; only the bucket *listing* is 403. The root collection is
+therefore a public index of every collection and its members, walkable by anyone
+with the URL.
+
+So scoping stops a signed-in user discovering the corpus **through the app**.
+Anyone holding a manifest URL can still read it. Don't describe this as
+confidentiality; if that is ever actually needed, it is a bucket-policy and
+viewer-architecture change, not an API one.
+- **Editing a work** needs a grant on at least one collection it is currently in.
+  A work in *no* collection is therefore admin-only.
+- **Creating a work** requires the editor to name a collection they hold — hence
+  the extra field in the Add Work modal. Without it they would create something
+  they instantly could not edit.
+- **Changing membership** requires a grant on every collection being added *or
+  removed*, so an editor cannot quietly evict a work from someone else's
+  collection while editing it.
+- **An admin cannot remove their own admin role** (`canAssignRoles`). This is
+  what makes the pool un-lockable: the only call that reduces the admin count is
+  one admin demoting another, which by definition leaves the caller behind, so
+  no sequence of API calls reaches zero admins. The Users screen disables that
+  one checkbox — the other two on the same row stay live, so an admin can still
+  give themselves `editor`.
+- The last-admin check in `users.js` is now a **backstop**, not the primary
+  guard: with self-demotion refused it cannot normally fire. It catches the
+  admin count being reduced outside the app (an account deleted in the Cognito
+  console).
+
+The self-guard compares `principal.sub` to the target's Cognito `Username`.
+Those are the same value in this pool — `UsernameAttributes: [email]` makes the
+email an alias, so `Username` is the generated UUID. Verified against the
+deployed pool, not assumed; if the pool's username config ever changes, this
+comparison is the thing that breaks.
+
+### Gotchas
+
+- The **search index** carries a `collections` keyword field so a query can be
+  scoped without joining the manifest corpus. It is `keyword`, not `text`,
+  because the filter is a `terms` clause. `ensureIndex` PUTs the mapping even
+  when the index already exists (adding a property is idempotent), but existing
+  documents only gain the field on the next `POST /search/reindex` — **a schema
+  change here is not live until you reindex.**
+- `GET /manifests` filters what it returns but builds the public sign-in
+  showcase from the **unfiltered** corpus. Deriving the showcase from one
+  caller's visible subset would let whoever loads that route next shrink what
+  every anonymous visitor sees.
+- API Gateway's HTTP API JWT authorizer serializes a multi-valued claim as the
+  string `"[admin collection:eis]"`, **not** as JSON. `parseGroupClaim` handles
+  that, a real array, and a bare string. Get this wrong and every group silently
+  becomes invisible — which fails open on reads and closed on writes.
+- The UI has its own copy of the group parsing in `ui/src/lib/session.js`. It
+  exists only to shape the UI (hide a section, require a field). The server
+  re-derives everything; nothing in the UI enforces anything.
+
+### Bootstrapping
+
+`admin` and `editor` are declared in `template.yml`; grant groups are created on
+demand by the API. A fresh stack has **no members in any group**, so nobody can
+reach the Users section — the first admin has to be seeded out of band:
+
+```bash
+aws cognito-idp admin-add-user-to-group \
+  --user-pool-id <pool-id> --username <cognito-username-uuid> --group-name admin
+```
+
+`--username` is Cognito's own UUID, not the email: the pool sets
+`UsernameAttributes: [email]`, so the email is an alias. `aws cognito-idp
+list-users` shows both.
+
+## Lambda runtime SDK
+
+`External: "@aws-sdk/*"` in the esbuild config means every AWS SDK client is
+resolved from the **managed** `nodejs22.x` runtime at
+`/var/runtime/node_modules`, not bundled. `client-cognito-identity-provider` is
+there — verified by esbuild resolving it from that exact path during a build.
+
+Two things that will mislead you if you go looking:
+
+- The **container base image** (`public.ecr.aws/lambda/nodejs:22`) ships *no*
+  AWS SDK at all. Probing it tells you nothing about the managed runtime.
+- Trying to *bundle* an SDK client fails: esbuild resolves it from
+  `/var/runtime/node_modules`, where only `dist-cjs` exists, and then cannot find
+  the `@smithy/core` ESM submodules it references. Leave the glob alone.
+
 ## Coding Style & Naming Conventions
 Use CommonJS modules (`require`/`module.exports`) and 2-space indentation in all Node.js code under `app/`. The UI (`/ui`) uses ESM and JSX. Prefer descriptive, dashed directory names and camelCase identifiers. Strings default to double quotes; async work uses `async`/`await`.
 
 ## Design Conventions
 
 The UI is built on Radix Themes (`accentColor="iris"`, `grayColor="mauve"`, `scaling="110%"` in `ui/src/main.jsx`). Reach for a Radix component before hand-rolling one, and use theme tokens (`--gray-N`, `--accent-N`, `--space-N`, `--radius-N`) rather than literal colors or pixel values. Never hardcode a hex — it will not follow the theme.
+
+**Page headings.** Every section gets one centred heading via `PageHeading`
+(`ui/src/components/PageHeading.jsx`), and a work's title on its detail page is
+the same treatment. Both carry `.page-heading`, which owns the typography — the
+size falls between Radix's steps, so it lives in CSS rather than in a `size`
+prop. `.work-title-editable` adds only the click-to-edit chip, so an editable
+title and a static one cannot drift apart.
+
+Two traps:
+
+- Radix's `Text` accepts `as` of `span | div | p | label` **only**. Anything else
+  is silently rendered as a `<span>` — no error, no warning. That is how the work
+  title ended up not being a heading element. `PageHeading` uses
+  `<Text asChild><h2>` instead.
+- They must carry `font-family: var(--heading-font-family)` explicitly. These
+  render as Radix `Text`, whose default family is Google Sans — which is loaded
+  at **400/500/600/700 only**, so a `font-weight: 800` on it is *synthesized*
+  into a smeared faux-bold rather than refused. Google Sans Flex Variable
+  carries a real `1 1000` weight axis and is the only way to get a true black.
+  Verify with `document.fonts.check('800 44px "<family>"')` before assuming a
+  weight exists; enumerate `CSSFontFaceRule`s to see what is actually declared.
+
+The `<h1>` is the "Understory" wordmark in `AppShell`, so page headings are `h2`.
 
 **Interactive surfaces.** Any surface a user grabs, drops onto, or otherwise manipulates directly — drag handles, dropzones, and similar affordances — uses a muted gray at rest and a muted accent on hover. Use the shared tokens from `ui/src/App.css` rather than repeating the scale steps:
 

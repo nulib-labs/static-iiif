@@ -5,12 +5,19 @@ const {HttpRequest} = require("@smithy/protocol-http");
 const {Sha256} = require("@aws-crypto/sha256-js");
 const {listManifestSummaries} = require("../../../shared/manifest");
 const {buildSearchDocument} = require("../../../shared/search");
+const {managedCollectionRefs} = require("../../../shared/collection");
+const {
+  principalFromEvent,
+  visibleCollectionSlugs,
+  canReindex,
+} = require("../../../shared/access");
 
 const BULK_BATCH_SIZE = 500;
 
 const s3 = new S3Client({});
 const bucket = process.env.IIIF_BUCKET;
 const indexName = process.env.SEARCH_INDEX_NAME;
+const baseUrl = (process.env.IIIF_BASE_URL || "").replace(/\/$/, "");
 const endpoint = new URL(process.env.OPENSEARCH_ENDPOINT);
 
 const signer = new SignatureV4({
@@ -65,19 +72,33 @@ async function osRequest(method, path, body, contentType = "application/json") {
   return {status: response.status, json, text};
 }
 
+const INDEX_PROPERTIES = {
+  title: {type: "text", fields: {keyword: {type: "keyword", ignore_above: 512}}},
+  manifestId: {type: "keyword"},
+  // keyword, not text: the scoping filter is a `terms` clause, which does not
+  // match an analyzed field.
+  collections: {type: "keyword"},
+};
+
 async function ensureIndex() {
   const status = await osRequest("HEAD", `/${indexName}`);
   if (status.status === 200) {
+    // An index created before `collections` existed needs the field mapped.
+    // Adding a new property to an existing mapping is allowed and idempotent;
+    // documents still have to be reindexed to populate it.
+    const mapped = await osRequest(
+      "PUT",
+      `/${indexName}/_mapping`,
+      JSON.stringify({properties: INDEX_PROPERTIES}),
+    );
+    if (mapped.status >= 300) {
+      throw new Error(`Failed to update mapping: ${mapped.status} ${mapped.text}`);
+    }
     return;
   }
   const body = JSON.stringify({
     settings: {number_of_shards: 1, number_of_replicas: 1},
-    mappings: {
-      properties: {
-        title: {type: "text", fields: {keyword: {type: "keyword", ignore_above: 512}}},
-        manifestId: {type: "keyword"},
-      },
-    },
+    mappings: {properties: INDEX_PROPERTIES},
   });
   const created = await osRequest("PUT", `/${indexName}`, body);
   if (created.status >= 300) {
@@ -167,7 +188,13 @@ async function reindex() {
   const summaries = await listManifestSummaries({s3, bucket});
   const docs = summaries
     .filter((summary) => summary.manifestUrl)
-    .map((summary) => buildSearchDocument({label: summary.label, manifestUrl: summary.manifestUrl}));
+    .map((summary) =>
+      buildSearchDocument({
+        label: summary.label,
+        manifestUrl: summary.manifestUrl,
+        collections: managedCollectionRefs(summary.partOf, {baseUrl}).map((ref) => ref.slug),
+      }),
+    );
 
   const {indexed, failed} = await bulkUpsert(docs);
 
@@ -179,13 +206,20 @@ async function reindex() {
   return {indexed, deleted, failed, tookMs: Date.now() - start};
 }
 
-async function query(q) {
+async function query(q, principal) {
   const term = (q || "").trim();
-  const body = JSON.stringify(
-    term
-      ? {size: 25, query: {match: {title: {query: term, fuzziness: "AUTO"}}}}
-      : {size: 1000, query: {match_all: {}}},
-  );
+  const visible = visibleCollectionSlugs(principal);
+  // [] means the caller may see nothing. Answer without touching OpenSearch —
+  // and, more importantly, without a query that could be coaxed into matching.
+  if (visible && visible.length === 0) {
+    return {hits: []};
+  }
+  const match = term
+    ? {match: {title: {query: term, fuzziness: "AUTO"}}}
+    : {match_all: {}};
+  const scoped =
+    visible === null ? match : {bool: {must: [match], filter: [{terms: {collections: visible}}]}};
+  const body = JSON.stringify({size: term ? 25 : 1000, query: scoped});
   const response = await osRequest("POST", `/${indexName}/_search`, body);
   if (response.status >= 300) {
     throw new Error(`Search failed: ${response.status} ${response.text}`);
@@ -213,7 +247,12 @@ exports.handler = async (event) => {
     return jsonResponse(404, {error: "Not found"});
   }
 
+  const principal = principalFromEvent(event);
+
   if (method === "POST" && segments[1] === "reindex") {
+    if (!canReindex(principal)) {
+      return jsonResponse(403, {error: "Only an administrator can publish the search index"});
+    }
     try {
       const result = await reindex();
       return jsonResponse(200, result);
@@ -225,7 +264,7 @@ exports.handler = async (event) => {
 
   if (method === "GET" && segments.length === 1) {
     try {
-      const result = await query(event.queryStringParameters?.q);
+      const result = await query(event.queryStringParameters?.q, principal);
       return jsonResponse(200, result);
     } catch (error) {
       console.error("Search query failed", error);
