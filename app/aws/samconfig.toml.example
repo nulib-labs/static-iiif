@@ -14,9 +14,16 @@ capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
 #   Generate one at: https://github.com/settings/tokens → Generate new token (classic) → check "repo"
 # GitHub branch to deploy (default: main)
 #
-# OpenSearch parameters are optional — leave them out (or blank) if this stack
-# doesn't need a search index. If you do set them, point at an existing shared
-# OpenSearch domain (this repo does not provision one); after deploying, read
-# the SearchFunctionRoleArn stack output and add it to that domain's access
-# policy yourself.
-parameter_overrides = "GitHubRepo=https://github.com/your-org/your-repo GitHubOAuthToken=ghp_your_token_here GitHubBranch=main OpenSearchDomainName=your-domain-name OpenSearchEndpoint=https://search-your-domain-xxxx.us-east-1.es.amazonaws.com SearchIndexName=your-stack-works"
+# OpenSearch parameters are REQUIRED. The collection works list is served by
+# the search index, so a stack without one cannot list anything. Point at an
+# existing shared domain — this repo does not provision one.
+#
+# SearchIndexPrefix is optional and defaults to the stack name. It must be
+# lowercase: index names are built as <prefix>._working and
+# <prefix>.<slug>._pub.<runId>, with <prefix>.<slug> as the alias a consuming
+# site points at.
+#
+# After deploying, read the OpenSearchAccessRoleArn stack output and add it to
+# that domain's access policy yourself. It is one ARN — PublishFunction shares
+# ManifestFunction's role so that it stays one.
+parameter_overrides = "GitHubRepo=https://github.com/your-org/your-repo GitHubOAuthToken=ghp_your_token_here GitHubBranch=main OpenSearchDomainName=your-domain-name OpenSearchEndpoint=https://search-your-domain-xxxx.us-east-1.es.amazonaws.com"

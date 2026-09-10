@@ -52,7 +52,7 @@ function useShowcase() {
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch(`${PRESENTATION_BASE}/presentation/showcase.json`, {
+        const response = await fetch(`${PRESENTATION_BASE}/working/showcase.json`, {
           cache: "no-store",
         });
         if (!response.ok) return;

@@ -17,7 +17,7 @@ const {
   rootCollectionKey,
   buildCollectionId,
   collectionSlugFromId,
-  mergeContext,
+  normalizeContext,
   buildPartOfEntry,
   isManagedPartOfEntry,
   managedCollectionRefs,
@@ -100,46 +100,101 @@ test("sanitizeCollectionSlug validates without transforming", () => {
 });
 
 test("key and id builders", () => {
-  assert.equal(collectionObjectKey("campus-maps"), "presentation/collection/campus-maps/collection.json");
+  // Keys are space-qualified and default to working: every caller but the
+  // publish pipeline wants the draft.
+  assert.equal(collectionObjectKey("campus-maps"), "working/presentation/collection/campus-maps/collection.json");
   // The root must be buildable even though its slug is reserved for users.
-  assert.equal(rootCollectionKey(), "presentation/collection/index/collection.json");
+  assert.equal(rootCollectionKey(), "working/presentation/collection/index/collection.json");
 
-  assert.equal(buildCollectionId(BASE, "campus-maps"), `${BASE}/presentation/collection/campus-maps/collection.json`);
+  assert.equal(buildCollectionId(BASE, "campus-maps"), `${BASE}/working/presentation/collection/campus-maps/collection.json`);
   assert.equal(buildCollectionId(`${BASE}/`, "campus-maps"), buildCollectionId(BASE, "campus-maps"));
-  assert.equal(buildCollectionId("", "campus-maps"), "presentation/collection/campus-maps/collection.json");
+  assert.equal(buildCollectionId("", "campus-maps"), "working/presentation/collection/campus-maps/collection.json");
 
+  // The published mirror of the same collection.
+  assert.equal(
+    collectionObjectKey("campus-maps", "published"),
+    "published/presentation/collection/campus-maps/collection.json",
+  );
+  assert.equal(rootCollectionKey("published"), "published/presentation/collection/index/collection.json");
+  assert.equal(
+    buildCollectionId(BASE, "campus-maps", "published"),
+    `${BASE}/published/presentation/collection/campus-maps/collection.json`,
+  );
+  assert.throws(() => collectionObjectKey("campus-maps", "live"), /Unknown space/);
+
+  // The slug reads back out of either space's id.
   assert.equal(collectionSlugFromId(buildCollectionId(BASE, "campus-maps")), "campus-maps");
+  assert.equal(
+    collectionSlugFromId(buildCollectionId(BASE, "campus-maps", "published")),
+    "campus-maps",
+  );
   assert.equal(collectionSlugFromId(`${BASE}/presentation/manifest/abc/manifest.json`), null);
   assert.equal(collectionSlugFromId("campus-maps"), null);
   assert.equal(collectionSlugFromId(""), null);
   assert.equal(collectionSlugFromId(undefined), null);
 });
 
-test("mergeContext: presentation context is always last, exactly once", () => {
-  assert.equal(mergeContext(PRESENTATION_CONTEXT, {managed: false}), PRESENTATION_CONTEXT);
-  assert.equal(mergeContext(null, {managed: false}), PRESENTATION_CONTEXT);
-
-  const managed = mergeContext(PRESENTATION_CONTEXT, {managed: true});
-  assert.deepEqual(managed, [{[STATIC_IIIF_PREFIX]: STATIC_IIIF_NAMESPACE}, PRESENTATION_CONTEXT]);
-  assert.equal(managed.at(-1), PRESENTATION_CONTEXT);
-
-  // Unmanaging collapses back to the bare string.
-  assert.equal(mergeContext(managed, {managed: false}), PRESENTATION_CONTEXT);
+test("normalizeContext: the presentation context, last and exactly once", () => {
+  assert.equal(normalizeContext(PRESENTATION_CONTEXT), PRESENTATION_CONTEXT);
+  assert.equal(normalizeContext(null), PRESENTATION_CONTEXT);
 
   // A foreign extension context survives, ahead of the presentation context.
   const navPlace = "http://iiif.io/api/extension/navplace/context.json";
-  const mixed = mergeContext([navPlace, PRESENTATION_CONTEXT], {managed: true});
-  assert.deepEqual(mixed, [navPlace, {[STATIC_IIIF_PREFIX]: STATIC_IIIF_NAMESPACE}, PRESENTATION_CONTEXT]);
+  const mixed = normalizeContext([navPlace, PRESENTATION_CONTEXT]);
+  assert.deepEqual(mixed, [navPlace, PRESENTATION_CONTEXT]);
+  assert.equal(mixed.at(-1), PRESENTATION_CONTEXT);
+  assert.deepEqual(normalizeContext(mixed), mixed, "idempotent");
 
-  // Idempotent, and never duplicates our prefix object.
-  assert.deepEqual(mergeContext(mixed, {managed: true}), mixed);
+  // WE ADD NOTHING. Our extension terms are absolute IRIs, so nothing has to be
+  // declared — and an object in @context is what broke Clover, which maps over
+  // the array calling .replace() on every entry.
+  assert.equal(typeof normalizeContext(PRESENTATION_CONTEXT), "string");
+  assert.equal(
+    [PRESENTATION_CONTEXT, null, [navPlace, PRESENTATION_CONTEXT]]
+      .flatMap((input) => [normalizeContext(input)].flat())
+      .some((entry) => typeof entry !== "string"),
+    false,
+  );
 
-  // Another deployment's namespace for the same prefix is replaced, not kept.
+  // A prefix declaration left by the old shape, or by another deployment, is
+  // shed rather than carried forward — so a manifest written before this heals
+  // the next time it is saved.
+  const legacy = [{[STATIC_IIIF_PREFIX]: STATIC_IIIF_NAMESPACE}, PRESENTATION_CONTEXT];
+  assert.equal(normalizeContext(legacy), PRESENTATION_CONTEXT);
   const theirs = [{[STATIC_IIIF_PREFIX]: "https://elsewhere.example/ns#"}, PRESENTATION_CONTEXT];
-  assert.deepEqual(mergeContext(theirs, {managed: true}), [
-    {[STATIC_IIIF_PREFIX]: STATIC_IIIF_NAMESPACE},
-    PRESENTATION_CONTEXT,
-  ]);
+  assert.equal(normalizeContext(theirs), PRESENTATION_CONTEXT);
+});
+
+// The bug this shape exists to avoid. Clover normalizes http->https across
+// @context by calling .replace() on each entry, guarding only against null, so
+// an inline term-definition object throws "r.replace is not a function" and the
+// viewer never renders. Canopy uses Clover, so this would break consumers of
+// anything we publish, not only this app's own preview.
+test("every @context we emit survives Clover's normalization", () => {
+  const cloverNormalize = (doc) =>
+    (Array.isArray(doc["@context"]) ? doc["@context"] : [doc["@context"]]).map((entry) =>
+      entry == null ? undefined : entry.replace("http://", "https://"),
+    );
+
+  const filed = applyCollections(
+    {"@context": PRESENTATION_CONTEXT, id: "m", type: "Manifest", items: []},
+    {baseUrl: BASE, collections: [{slug: "campus-maps", label: "Campus Maps"}]},
+  );
+  assert.doesNotThrow(() => cloverNormalize(filed));
+
+  const leaf = buildCollectionDocument({
+    baseUrl: BASE,
+    slug: "campus-maps",
+    label: "Campus Maps",
+    members: [{manifestId: `${BASE}/working/presentation/manifest/a/manifest.json`, label: "A"}],
+  });
+  assert.doesNotThrow(() => cloverNormalize(leaf));
+
+  const root = buildRootCollectionDocument({
+    baseUrl: BASE,
+    collections: [{slug: "campus-maps", label: "Campus Maps", itemCount: 12}],
+  });
+  assert.doesNotThrow(() => cloverNormalize(root));
 });
 
 test("isManagedPartOfEntry: ours, theirs, and the cross-deployment trap", () => {
@@ -223,10 +278,9 @@ test("applyCollections: foreign entries preserved verbatim at the front", () => 
     "campus-maps",
   ]);
   assert.ok(next.partOf.slice(1).every((e) => e[MANAGED_KEY] === true));
-  assert.deepEqual(next["@context"], [
-    {[STATIC_IIIF_PREFIX]: STATIC_IIIF_NAMESPACE},
-    PRESENTATION_CONTEXT,
-  ]);
+  // Nothing is added: the marker key is an absolute IRI, so no prefix has to
+  // be declared and @context stays the bare string a consumer can read.
+  assert.equal(next["@context"], PRESENTATION_CONTEXT);
   // The source manifest is not mutated.
   assert.equal(nulManifest.partOf.length, 1);
 });
@@ -313,10 +367,7 @@ test("the root always exists, may be empty, and carries the count both ways", ()
       {slug: "campus-maps", label: "Campus Maps", thumbnail: [{id: "https://img/1", type: "Image"}], itemCount: 12},
     ],
   });
-  assert.deepEqual(root["@context"], [
-    {[STATIC_IIIF_PREFIX]: STATIC_IIIF_NAMESPACE},
-    PRESENTATION_CONTEXT,
-  ]);
+  assert.equal(root["@context"], PRESENTATION_CONTEXT);
 
   const [entry] = root.items;
   assert.equal(entry.type, "Collection");

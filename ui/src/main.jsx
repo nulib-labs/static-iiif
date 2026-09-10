@@ -16,11 +16,12 @@ import '@fontsource/ibm-plex-mono/400.css'
 import '@fontsource/ibm-plex-mono/500.css'
 import '@fontsource/ibm-plex-mono/600.css'
 import './index.css'
-import App from './App.jsx'
+import CollectionWorksPage from './pages/CollectionWorksPage.jsx'
+import WorkPage from './pages/WorkPage.jsx'
 import AuthGate from './AuthGate.jsx'
 import AppShell from './components/AppShell.jsx'
-import CollectionsPage from './components/CollectionsPage.jsx'
-import UsersPage from './components/UsersPage.jsx'
+import CollectionsPage from './pages/CollectionsPage.jsx'
+import UsersPage from './pages/UsersPage.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -32,11 +33,15 @@ createRoot(document.getElementById('root')).render(
               {/* Layout route: the header, section menu and page container are
                   shared by every signed-in section. */}
               <Route element={<AppShell signOut={signOut} username={username} />}>
-                <Route path="/works/:workId?" element={<App />} />
-                <Route path="/collections" element={<CollectionsPage />} />
+                {/* The collections list is the home page: every work belongs to a
+                    collection, so there is no all-works view to land on. */}
+                <Route path="/" element={<CollectionsPage />} />
+                <Route path="/collections" element={<Navigate to="/" replace />} />
+                <Route path="/collection/:slug" element={<CollectionWorksPage />} />
+                <Route path="/collection/:slug/work/:workId" element={<WorkPage />} />
                 <Route path="/users" element={<UsersPage />} />
               </Route>
-              <Route path="*" element={<Navigate to="/works" replace />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           )}
         </AuthGate>

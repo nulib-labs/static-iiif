@@ -1,9 +1,0 @@
-{
-  "@context": "http://iiif.io/api/presentation/3/context.json",
-  "id": "[iiif-base-url]/presentation/manifest/[manifest-id]/manifest.json",
-  "type": "Manifest",
-  "label": {
-    "none": ["[manifest-label]"]
-  },
-  "items": []
-}

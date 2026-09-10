@@ -1,35 +1,50 @@
-import {NavLink, Outlet} from "react-router-dom";
+import {Link, Outlet, useLocation} from "react-router-dom";
 import {Box, Heading} from "@radix-ui/themes";
 import {ROLE_ADMIN, useSession} from "../lib/session";
 import "../App.css";
 
 // The app's top-level sections. Order here is the order on the page.
+//
+// Each carries its own `match` because NavLink's built-in matching cannot
+// express what the collections tab needs: without `end`, `to="/"` is a prefix
+// of every path and lights on /users; with `end`, it goes dark on
+// /collection/:slug. So this uses a plain Link and decides for itself.
+//
+// Adding a section means one entry here, one `match`, and one <Route>.
 const SECTIONS = [
-  {path: "/works", label: "Works"},
-  {path: "/collections", label: "Collections"},
+  {
+    path: "/",
+    label: "Collections",
+    match: (p) => p === "/" || p === "/collections" || p.startsWith("/collection/"),
+  },
   // Admin-only. Hiding it is a courtesy, not the control: /users is refused by
   // the API for anyone else, and the page says so if they navigate there.
-  {path: "/users", label: "Users", adminOnly: true},
+  {path: "/users", label: "Users", adminOnly: true, match: (p) => p.startsWith("/users")},
 ];
 
-// NavLink marks itself active for a path and everything under it, so /works
-// stays lit on a work's own page (/works/:workId) with no path matching here.
-// It also sets aria-current, which is what makes this readable as navigation.
+// aria-current is set by hand here. NavLink would set it for free, but it
+// derives it from the same matching this replaces — so it would mark the wrong
+// tab, which is worse than not having it.
 function SectionNav() {
   const {role} = useSession();
+  const {pathname} = useLocation();
   const visible = SECTIONS.filter((section) => !section.adminOnly || role === ROLE_ADMIN);
 
   return (
     <nav className="section-nav" aria-label="Sections">
-      {visible.map((section) => (
-        <NavLink
-          key={section.path}
-          to={section.path}
-          className={({isActive}) => `section-link${isActive ? " section-link--active" : ""}`}
-        >
-          {section.label}
-        </NavLink>
-      ))}
+      {visible.map((section) => {
+        const isActive = section.match(pathname);
+        return (
+          <Link
+            key={section.path}
+            to={section.path}
+            className={`section-link${isActive ? " section-link--active" : ""}`}
+            aria-current={isActive ? "page" : undefined}
+          >
+            {section.label}
+          </Link>
+        );
+      })}
     </nav>
   );
 }
