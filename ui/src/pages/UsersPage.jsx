@@ -11,13 +11,9 @@ import {
   Table,
   Text,
 } from "@radix-ui/themes";
-import {COLLECTION_API_BASE, MANIFEST_API_BASE, apiFetch} from "../lib/api";
+import {COLLECTION_API_BASE, USER_API_BASE, apiFetch} from "../lib/api";
 import {ROLE_ADMIN, ROLE_EDITOR, useSession} from "../lib/session";
-import PageHeading from "./PageHeading";
-
-// /manifests and /collections are siblings, so /users is derived the same way
-// the collections base is.
-const USER_API_BASE = MANIFEST_API_BASE.replace(/\/manifests$/, "/users");
+import PageHeading from "../components/PageHeading";
 
 // A Drupal-style matrix: one column, one checkbox per role, every row showing
 // the same three so the grid can be read down as well as across.

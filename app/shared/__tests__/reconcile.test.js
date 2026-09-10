@@ -40,7 +40,7 @@ test("adds a work to a brand-new collection", () => {
   assert.deepEqual(plan.leafDeletes, []);
 
   const [write] = plan.leafWrites;
-  assert.equal(write.key, "presentation/collection/campus-maps/collection.json");
+  assert.equal(write.key, "working/presentation/collection/campus-maps/collection.json");
   assert.deepEqual(write.document.items.map((item) => item.id), [manifestId("a")]);
   assert.deepEqual(write.document.thumbnail, THUMB, "leaf borrows the member's thumbnail");
 

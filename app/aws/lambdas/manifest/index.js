@@ -7,35 +7,40 @@ const {
   ListObjectsV2Command,
 } = require("@aws-sdk/client-s3");
 const {
-  MANIFEST_PREFIX,
   sanitizeManifestIdentifier,
   manifestObjectKey,
   buildManifestId,
   createManifestTemplate,
   extractLabel,
   canvasThumbnailService,
-  readManifest: readManifestShared,
   manifestSummary,
-  listManifestSummaries: listManifestSummariesShared,
 } = require("../../../shared/manifest");
 const {
   managedCollectionRefs,
   stripForeignManagedEntries,
 } = require("../../../shared/collection");
 const {jsonResponse, parseBody, isNotFound} = require("./http");
+const {INTERNAL_PREFIX} = require("../../../shared/space");
+const {readManifest, writeManifest} = require("./store");
+const {
+  upsertQuietly,
+  removeQuietly,
+  listWorks,
+  syncCounts,
+  SYNC_NEW,
+  SYNC_CHANGED,
+} = require("./workIndex");
 const {
   principalFromEvent,
   canEditWork,
   canCreateWork,
-  canSetWorkCollections,
   canViewWork,
 } = require("../../../shared/access");
 const {handleUsersRoute} = require("./users");
 const {
   handleCollectionsRoute,
-  handleManifestCollectionsRoute,
+  handleManifestCollectionRoute,
   reconcileQuietly,
-  refreshShowcase,
   fileNewWork,
   desiredCollectionSlugs,
 } = require("./collections");
@@ -197,8 +202,8 @@ function manifestDetail(identifier, manifest) {
   return {
     ...manifestSummary(identifier, manifest),
     // Derived from partOf rather than stored separately — the manifest is the
-    // authority on what it belongs to.
-    collections: managedCollectionRefs(manifest?.partOf, {baseUrl: manifestBaseUrl}),
+    // authority on what it belongs to. Singular: a work belongs to exactly one.
+    collection: managedCollectionRefs(manifest?.partOf, {baseUrl: manifestBaseUrl})[0] || null,
     manifest,
   };
 }
@@ -240,26 +245,7 @@ function validateManifestField(field, value) {
   }
 }
 
-async function readManifest(identifier) {
-  return readManifestShared({s3, bucket, identifier});
-}
 
-async function writeManifest(identifier, manifest) {
-  const key = manifestObjectKey(identifier);
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: JSON.stringify(manifest, null, 2),
-      ContentType: "application/json",
-    }),
-  );
-  return key;
-}
-
-async function listManifestSummaries() {
-  return listManifestSummariesShared({s3, bucket});
-}
 
 // The collections a work currently belongs to — the input to every edit check.
 function workCollections(manifest) {
@@ -313,33 +299,6 @@ exports.handler = async (event) => {
   }
 
   if (segments.length === 1) {
-    if (method === "GET") {
-      try {
-        const summaries = await listManifestSummaries();
-        // The sign-in screen renders before anyone can call the API, so it reads
-        // a public sample from the bucket instead. Refreshed here because this
-        // route has already paid for the corpus read.
-        //
-        // Deliberately built from the UNFILTERED corpus: it is a public,
-        // pre-auth sample, and deriving it from one caller's visible subset
-        // would let whoever happens to load this route next shrink what the
-        // sign-in screen shows everyone.
-        await refreshShowcase(summaries);
-        // partOf is the shared summary's internal detail; the API surface
-        // exposes the resolved collections instead.
-        const manifests = summaries
-          .map(({partOf, ...summary}) => ({
-            ...summary,
-            collections: managedCollectionRefs(partOf, { baseUrl: manifestBaseUrl }),
-          }))
-          .filter((summary) => canViewWork(principal, summary.collections));
-        return jsonResponse(200, { manifests });
-      } catch (error) {
-        console.error("List manifests failed", error);
-        return jsonResponse(500, { error: "Unable to list manifests" });
-      }
-    }
-
     if (method === "POST") {
       try {
         const body = parseBody(event);
@@ -350,18 +309,18 @@ exports.handler = async (event) => {
         // An editor must file a new work into a collection they hold, or they
         // would immediately lose the ability to edit what they just made.
         // Admins may leave it uncollected.
-        if (!canCreateWork(principal, desiredCollectionSlugs(body.collections))) {
+        if (!canCreateWork(principal, desiredCollectionSlugs(body.collection))) {
           return jsonResponse(403, {
-            error: "Choose a collection you have been granted to create a work in",
+            error: "Choose one collection you have been granted to create this work in",
           });
         }
         const identifier = crypto.randomUUID();
         const template = createManifestTemplate({ baseUrl: manifestBaseUrl, identifier, label });
-        await writeManifest(identifier, template);
+        await writeManifest(identifier, template, {syncState: SYNC_NEW});
         const manifest = await fileNewWork({
           identifier,
           manifest: template,
-          labels: body.collections,
+          label: body.collection,
           writeManifest,
         });
         return jsonResponse(201, { manifest: manifestDetail(identifier, manifest) });
@@ -406,9 +365,9 @@ exports.handler = async (event) => {
       if (!manifest || typeof manifest !== "object" || manifest.type !== "Manifest") {
         return jsonResponse(400, { error: "A valid Manifest is required" });
       }
-      if (!canCreateWork(principal, desiredCollectionSlugs(body.collections))) {
+      if (!canCreateWork(principal, desiredCollectionSlugs(body.collection))) {
         return jsonResponse(403, {
-          error: "Choose a collection you have been granted to import a work into",
+          error: "Choose one collection you have been granted to import this work into",
         });
       }
       const identifier = crypto.randomUUID();
@@ -423,11 +382,11 @@ exports.handler = async (event) => {
         },
         {baseUrl: manifestBaseUrl},
       );
-      await writeManifest(identifier, importedManifest);
+      await writeManifest(identifier, importedManifest, {syncState: SYNC_NEW});
       const filedManifest = await fileNewWork({
         identifier,
         manifest: importedManifest,
-        labels: body.collections,
+        label: body.collection,
         writeManifest,
       });
       try {
@@ -532,11 +491,12 @@ exports.handler = async (event) => {
         await deleteManifestAssets(identifier, manifest);
         await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: manifestObjectKey(identifier) }));
         await s3
-          .send(new DeleteObjectCommand({ Bucket: bucket, Key: `${MANIFEST_PREFIX}/${identifier}/import-status.json` }))
+          .send(new DeleteObjectCommand({ Bucket: bucket, Key: `${INTERNAL_PREFIX}/import-status/${identifier}.json` }))
           .catch(() => {});
         // Truth first (the manifest is gone), projection second. A failure here
         // is logged, not surfaced: the delete itself succeeded, and a reindex
         // repairs the leftovers.
+        await removeQuietly(identifier);
         await reconcileQuietly({ manifest, desired: [], removed: true });
         return jsonResponse(200, { deleted: true });
       } catch (error) {
@@ -551,8 +511,8 @@ exports.handler = async (event) => {
     return jsonResponse(405, { error: "Method not allowed" });
   }
 
-  if (segments.length === 3 && segments[2] === "collections") {
-    return handleManifestCollectionsRoute({
+  if (segments.length === 3 && segments[2] === "collection") {
+    return handleManifestCollectionRoute({
       method,
       identifier,
       event,

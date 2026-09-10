@@ -138,9 +138,9 @@ function visibleCollectionSlugs(principal) {
   return [...grants(principal)].sort();
 }
 
-// A work is visible if it sits in a collection the caller holds. A work in no
-// collection is admin-only, exactly as it is for editing: there is nothing to
-// scope it by.
+// A work is visible if it sits in the collection the caller holds. Every work
+// has exactly one now; a work reporting none is damage, and refusing is the
+// safe reading of it.
 function canViewWork(principal, collectionSlugs) {
   if (isAdmin(principal)) return true;
   const held = grants(principal);
@@ -171,9 +171,9 @@ function canReindex(principal) {
   return isAdmin(principal);
 }
 
-// Editing an existing work: an editor needs a grant on at least one of the
-// collections the work is currently in. A work in no collection is therefore
-// admin-only, which is also why creating one requires naming a collection.
+// Editing an existing work: an editor needs a grant on the collection it is in.
+// Still written against a list so a manifest that somehow carries more than one
+// managed partOf entry degrades to "any of them will do" rather than throwing.
 function canEditWork(principal, currentSlugs) {
   if (isAdmin(principal)) return true;
   if (!isEditor(principal)) return false;
@@ -181,25 +181,41 @@ function canEditWork(principal, currentSlugs) {
   return toSlugArray(currentSlugs).some((slug) => held.has(slug));
 }
 
-// Creating a work: an editor must file it into at least one collection they
-// hold, or they would immediately lose access to what they just made.
+// Creating a work: it must be filed into exactly one collection. A work no
+// longer belongs to zero or several, so even an admin names one — there is no
+// uncollected state left to land in. An editor must additionally hold the
+// collection, or they would immediately lose access to what they just made.
 function canCreateWork(principal, desiredSlugs) {
+  const desired = toSlugArray(desiredSlugs);
+  if (desired.length !== 1) return false;
+  if (isAdmin(principal)) return true;
+  if (!isEditor(principal)) return false;
+  return grants(principal).has(desired[0]);
+}
+
+// Moving a work between collections. Both ends must be held: taking a work out
+// of someone else's collection and dropping one into someone else's are the
+// same kind of act, and an editor may do neither.
+//
+// Re-filing into the collection the work is already in is a no-op rather than a
+// permission question, so it asks only for what an ordinary edit asks.
+function canMoveWork(principal, fromSlug, toSlug) {
+  if (!toSlug) return false;
   if (isAdmin(principal)) return true;
   if (!isEditor(principal)) return false;
   const held = grants(principal);
-  const desired = toSlugArray(desiredSlugs);
-  return desired.length > 0 && desired.every((slug) => held.has(slug));
+  if (fromSlug === toSlug) return held.has(toSlug);
+  return held.has(toSlug) && (!fromSlug || held.has(fromSlug));
 }
 
-// Changing membership: every collection being added or removed must be one the
-// editor holds. Removing the last grant they hold is allowed — dropping a work
-// out of their own collection is a legitimate action, even though it costs them
-// access to it afterwards.
-function canSetWorkCollections(principal, currentSlugs, nextSlugs) {
+// Publishing one collection. Deliberately not admin-only the way canReindex is:
+// that stayed with admins because rebuilding the projection rewrote every
+// collection document, and this rewrites exactly one — the one the editor was
+// granted.
+function canPublish(principal, slug) {
   if (isAdmin(principal)) return true;
-  if (!canEditWork(principal, currentSlugs)) return false;
-  const held = grants(principal);
-  return changedSlugs(currentSlugs, nextSlugs).every((slug) => held.has(slug));
+  if (!isEditor(principal)) return false;
+  return Boolean(slug) && grants(principal).has(slug);
 }
 
 // The symmetric difference: what this save actually adds or removes. Untouched
@@ -245,7 +261,8 @@ module.exports = {
   canReindex,
   canEditWork,
   canCreateWork,
-  canSetWorkCollections,
+  canMoveWork,
+  canPublish,
   changedSlugs,
   toSlugArray,
 };

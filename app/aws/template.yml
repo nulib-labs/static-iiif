@@ -18,18 +18,16 @@ Parameters:
     Description: "GitHub personal access token with repo scope (https://github.com/settings/tokens)"
   OpenSearchDomainName:
     Type: String
-    Default: ""
     NoEcho: true
-    Description: "Bare name of a pre-existing OpenSearch domain (used to build the IAM resource ARN). Leave blank if this stack has no search index."
+    Description: "Bare name of a pre-existing OpenSearch domain (used to build the IAM resource ARN). REQUIRED — see OpenSearchEndpoint."
   OpenSearchEndpoint:
     Type: String
-    Default: ""
     NoEcho: true
-    Description: "Full https:// endpoint of the OpenSearch domain (used for signed HTTP calls). Leave blank if this stack has no search index."
-  SearchIndexName:
+    Description: "Full https:// endpoint of the OpenSearch domain (used for signed HTTP calls). REQUIRED: the collection works list is served by the index, so a stack without one has no way to list works."
+  SearchIndexPrefix:
     Type: String
     Default: ""
-    Description: "OpenSearch index name for this stack's works. Defaults to '<stack-name>-works' if left blank."
+    Description: "Prefix for this stack's OpenSearch index and alias names. Must be lowercase. Defaults to the stack name. Index names are built as <prefix>._working and <prefix>.<slug>._pub.<runId>, with <prefix>.<slug> as the alias a consuming site points at."
 
 Globals:
   Function:
@@ -46,7 +44,7 @@ Globals:
         IMAGE_API_BASE_URL: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
 
 Conditions:
-  SearchIndexNameProvided: !Not [!Equals [!Ref SearchIndexName, ""]]
+  SearchIndexPrefixProvided: !Not [!Equals [!Ref SearchIndexPrefix, ""]]
 
 Resources:
   SourceBucket:
@@ -106,10 +104,18 @@ Resources:
       Bucket: !Ref IIIFBucket
       PolicyDocument:
         Statement:
+          # Narrowed from /* to the two IIIF spaces. Clover fetches working
+          # manifests anonymously, so drafts stay readable — "published" means
+          # "in the consuming site's feed", not "visible". What this excludes is
+          # internal/*: import status and publish plans are operational, not
+          # part of either space. Pyramid TIFFs under image/* are read by
+          # serverless-iiif through its own role, never fetched directly.
           - Effect: Allow
             Principal: "*"
             Action: s3:GetObject
-            Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/*"
+            Resource:
+              - !Sub "arn:aws:s3:::${AWS::StackName}-iiif/working/*"
+              - !Sub "arn:aws:s3:::${AWS::StackName}-iiif/published/*"
 
   CognitoUserPool:
     Type: AWS::Cognito::UserPool
@@ -260,6 +266,11 @@ Resources:
       Environment:
         Variables:
           COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+          OPENSEARCH_ENDPOINT: !Ref OpenSearchEndpoint
+          SEARCH_INDEX_PREFIX: !If [SearchIndexPrefixProvided, !Ref SearchIndexPrefix, !Ref "AWS::StackName"]
+          # Built by hand rather than !Ref: the state machine's role is this
+          # function's role, so referencing the machine here would be circular.
+          PUBLISH_STATE_MACHINE_ARN: !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-publish"
       # The import walk hands off to itself when a very large work outruns one
       # invocation's time budget. Lambda's recursive-loop detection treats that
       # as a runaway and TERMINATES the chain after ~16 hops — silently, with
@@ -308,6 +319,29 @@ Resources:
               Action:
                 - events:PutEvents
               Resource: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default"
+            # The working index is maintained write-through from the save
+            # paths, and the collection works list is a query against it.
+            - Effect: Allow
+              Action:
+                - es:ESHttpGet
+                - es:ESHttpPut
+                - es:ESHttpPost
+                - es:ESHttpDelete
+                - es:ESHttpHead
+              Resource: !Sub "arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*"
+            - Effect: Allow
+              Action:
+                - states:StartExecution
+              Resource: !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-publish"
+            # A "running" status object is only a claim. States.ALL does not
+            # catch States.Runtime, so an execution can die without the
+            # RecordFailure state ever writing a terminal status — and then the
+            # collection is pinned at "running" for ever. Reading the execution
+            # is what lets that be reconciled.
+            - Effect: Allow
+              Action:
+                - states:DescribeExecution
+              Resource: !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${AWS::StackName}-publish:*"
             # The Users section. Scoped to this stack's own pool, and to the
             # group/user calls it actually makes — notably NOT AdminCreateUser
             # or AdminDeleteUser: accounts stay a console/CLI operation.
@@ -321,12 +355,6 @@ Resources:
                 - cognito-idp:AdminRemoveUserFromGroup
               Resource: !GetAtt CognitoUserPool.Arn
       Events:
-        GetManifests:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref ManifestHttpApi
-            Path: /manifests
-            Method: GET
         CreateManifest:
           Type: HttpApi
           Properties:
@@ -391,12 +419,36 @@ Resources:
             ApiId: !Ref ManifestHttpApi
             Path: /manifests/{id}/items
             Method: PUT
-        UpdateManifestCollections:
+        UpdateManifestCollection:
           Type: HttpApi
           Properties:
             ApiId: !Ref ManifestHttpApi
-            Path: /manifests/{id}/collections
+            Path: /manifests/{id}/collection
             Method: PUT
+        GetCollectionPublish:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/{slug}/publish
+            Method: GET
+        StartCollectionPublish:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/{slug}/publish
+            Method: POST
+        PublishCollectionIndex:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/{slug}/publish/index
+            Method: POST
+        ListCollectionWorks:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/{slug}/works
+            Method: GET
         ListCollections:
           Type: HttpApi
           Properties:
@@ -434,7 +486,13 @@ Resources:
             Path: /users/{username}
             Method: PUT
 
-  SearchFunction:
+  # The publish pipeline. An INLINE Map, not a Distributed Map: Plan writes the
+  # work list to S3 and emits only ~N/25 batch indices as this state's output,
+  # which is a few KB against the 256KB state limit. That avoids ItemReader IAM,
+  # the ResultWriter payload trap, and the circular dependency a Distributed Map
+  # creates by needing states:StartExecution on itself. Inline Map's ceiling of
+  # 40 concurrent is well above the 8 we want.
+  PublishFunction:
     Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: esbuild
@@ -443,53 +501,127 @@ Resources:
         Target: "node22"
         Sourcemap: false
         EntryPoints:
-          - aws/lambdas/search/index.js
+          - aws/lambdas/publish/index.js
         External:
           - "@aws-sdk/*"
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-search-api"
+      FunctionName: !Sub "${AWS::StackName}-publish"
       CodeUri: ../
       Handler: index.handler
       Timeout: 900
       Environment:
         Variables:
           OPENSEARCH_ENDPOINT: !Ref OpenSearchEndpoint
-          SEARCH_INDEX_NAME: !If [SearchIndexNameProvided, !Ref SearchIndexName, !Sub "${AWS::StackName}-works"]
+          SEARCH_INDEX_PREFIX: !If [SearchIndexPrefixProvided, !Ref SearchIndexPrefix, !Ref "AWS::StackName"]
+      # Deliberately the same role as ManifestFunction. Both need es:ESHttp*,
+      # and the domain's resource policy is not owned by this template — so a
+      # second role would mean a second ARN to paste in by hand on every new
+      # personal stack, which is one more thing to forget.
+      Role: !GetAtt ManifestFunctionRole.Arn
+
+  PublishStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "${AWS::StackName}-publish"
+      Type: STANDARD
       Policies:
-        - Statement:
-            - Effect: Allow
-              Action:
-                - es:ESHttpGet
-                - es:ESHttpPut
-                - es:ESHttpPost
-                - es:ESHttpDelete
-                - es:ESHttpHead
-              Resource: !Sub "arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*"
-            - Effect: Allow
-              Action:
-                - s3:ListBucket
-              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif"
-              Condition:
-                StringLike:
-                  s3:prefix:
-                    - "presentation/manifest/*"
-            - Effect: Allow
-              Action:
-                - s3:GetObject
-              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/presentation/manifest/*"
-      Events:
-        SearchQuery:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref ManifestHttpApi
-            Path: /search
-            Method: GET
-        SearchReindex:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref ManifestHttpApi
-            Path: /search/reindex
-            Method: POST
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PublishFunction
+      Definition:
+        Comment: "Publish one collection's IIIF assets and stage its search index"
+        StartAt: Plan
+        States:
+          Plan:
+            Type: Task
+            Resource: !GetAtt PublishFunction.Arn
+            Parameters:
+              task: plan
+              "slug.$": "$.slug"
+              "runId.$": "$.runId"
+              "requestedBy.$": "$.requestedBy"
+            ResultPath: "$.plan"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
+                Next: RecordFailure
+            Next: PublishWorks
+          PublishWorks:
+            Type: Map
+            ItemsPath: "$.plan.batches"
+            MaxConcurrency: 8
+            Parameters:
+              task: batch
+              "slug.$": "$.slug"
+              "runId.$": "$.runId"
+              "indexName.$": "$.plan.indexName"
+              # $$ is the Step Functions CONTEXT object, not the state input:
+              # $$.Map.Item.Value is the current item. A single $ makes this
+              # $.Map.Item.Value, which looks plausible and fails at runtime with
+              # "could not be found in the input". Do not "fix" the doubled $.
+              "batchIndex.$": "$$.Map.Item.Value"
+            Iterator:
+              StartAt: PublishBatch
+              States:
+                PublishBatch:
+                  Type: Task
+                  Resource: !GetAtt PublishFunction.Arn
+                  Retry:
+                    - ErrorEquals:
+                        - Lambda.TooManyRequestsException
+                        - Lambda.ServiceException
+                        - States.TaskFailed
+                      IntervalSeconds: 2
+                      MaxAttempts: 3
+                      BackoffRate: 2
+                  End: true
+            # The Map's aggregated output is capped at 256KB; each batch writes
+            # its own result object to S3, so nothing needs to come back here.
+            ResultPath: null
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
+                Next: RecordFailure
+            Next: WriteCollection
+          WriteCollection:
+            Type: Task
+            Resource: !GetAtt PublishFunction.Arn
+            Parameters:
+              task: writeCollection
+              "slug.$": "$.slug"
+              "runId.$": "$.runId"
+            ResultPath: "$.result"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
+                Next: RecordFailure
+            Next: Finalize
+          Finalize:
+            Type: Task
+            Resource: !GetAtt PublishFunction.Arn
+            Parameters:
+              task: finalize
+              "slug.$": "$.slug"
+              "runId.$": "$.runId"
+              "indexName.$": "$.plan.indexName"
+              "result.$": "$.result"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
+                Next: RecordFailure
+            End: true
+          RecordFailure:
+            Type: Task
+            Resource: !GetAtt PublishFunction.Arn
+            Parameters:
+              task: recordFailure
+              "slug.$": "$.slug"
+              "runId.$": "$.runId"
+              "error.$": "$.error"
+            Next: Failed
+          Failed:
+            Type: Fail
+            Error: PublishFailed
+            Cause: "The publish run did not complete; see the collection's status object"
 
   IIIFImageFunction:
     Type: AWS::Serverless::Function
@@ -549,8 +681,6 @@ Resources:
           Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
         - Name: VITE_MANIFEST_API_URL
           Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/manifests"
-        - Name: VITE_SEARCH_API_URL
-          Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/search"
         - Name: VITE_COLLECTION_API_URL
           Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/collections"
         - Name: VITE_STORAGE_BUCKET
@@ -595,9 +725,9 @@ Outputs:
     Value: !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
   ManifestApiUrl:
     Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
-  SearchFunctionRoleArn:
-    Description: "IAM role ARN to add to the OpenSearch domain's access policy (es:ESHttp* for this stack's SearchFunction)"
-    Value: !GetAtt SearchFunctionRole.Arn
+  OpenSearchAccessRoleArn:
+    Description: "IAM role ARN to add to the OpenSearch domain's access policy (es:ESHttp* for this stack). The domain's resource-based policy is not owned by this template, so this is a manual post-deploy step."
+    Value: !GetAtt ManifestFunctionRole.Arn
   CognitoUserPoolId:
     Value: !Ref CognitoUserPool
   CognitoClientId:

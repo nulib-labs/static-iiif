@@ -1,0 +1,54 @@
+// Working and published are two parallel spaces in the IIIF bucket. Everything
+// the admin edits lives under `working/`; publishing transforms it into
+// `published/`, which is what a downstream site consumes.
+//
+// Both spaces are self-consistent IIIF: a document under `working/` links only
+// to other `working/` documents, and the same for `published/`. That is why
+// publishing is a URL-rewriting transform rather than a copy — see
+// app/shared/publish.js.
+//
+// Pure: no AWS SDK, so both manifest.js (which loads the SDK) and collection.js
+// (which must not) can depend on it.
+
+const WORKING = "working";
+const PUBLISHED = "published";
+const SPACES = [WORKING, PUBLISHED];
+
+// Operational objects that are not part of either space — import status,
+// publish plans and run status. Deliberately outside `presentation/` so a
+// publish can treat `working/presentation/**` as "everything a site needs"
+// without filtering, and outside the public bucket policy.
+const INTERNAL_PREFIX = "internal";
+
+class SpaceError extends Error {}
+
+function assertSpace(space) {
+  if (!SPACES.includes(space)) {
+    throw new SpaceError(`Unknown space: ${space}`);
+  }
+  return space;
+}
+
+// `working/presentation/manifest/abc/manifest.json` from the space and the
+// space-relative key.
+function spaceKey(space, key) {
+  return `${assertSpace(space)}/${key}`;
+}
+
+// The URL prefix every self-reference in a document of this space starts with.
+// The boundary matters: a bare startsWith(base) would also match
+// `…/working-notes/…`, so callers compare against this or this plus "/".
+function spaceBase(baseUrl, space) {
+  return `${(baseUrl || "").replace(/\/$/, "")}/${assertSpace(space)}`;
+}
+
+module.exports = {
+  WORKING,
+  PUBLISHED,
+  SPACES,
+  INTERNAL_PREFIX,
+  SpaceError,
+  assertSpace,
+  spaceKey,
+  spaceBase,
+};

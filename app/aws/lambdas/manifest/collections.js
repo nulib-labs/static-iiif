@@ -38,9 +38,12 @@ const {
   manifestThumbnail,
 } = require("../../../shared/collection");
 const {jsonResponse, parseBody, isNotFound} = require("./http");
+const {WORKING, spaceKey} = require("../../../shared/space");
+const {listWorks, syncCounts, rebuild: rebuildWorkIndex, documentFor: workDocument} = require("./workIndex");
+const {handlePublishRoute} = require("./publishRoutes");
 const {
   canReindex,
-  canSetWorkCollections,
+  canMoveWork,
   canViewCollection,
   canManageCollections,
 } = require("../../../shared/access");
@@ -207,7 +210,11 @@ async function reconcileQuietly(args) {
 // and bounds what an anonymous visitor can see to this fixed sample, instead of
 // handing them a way to enumerate the corpus. The images themselves are already
 // publicly served by the Image API.
-const SHOWCASE_KEY = "presentation/showcase.json";
+// Inside a space so the narrowed bucket policy still serves it anonymously —
+// the sign-in screen renders before anyone can call the API. It samples the
+// working corpus today; phase 7 moves both the key and the writer to
+// published/, where a public pre-auth sample belongs.
+const SHOWCASE_KEY = spaceKey(WORKING, "showcase.json");
 const SHOWCASE_SIZE = 12;
 
 function buildShowcase(summaries) {
@@ -252,9 +259,7 @@ function parseDesiredCollections(body) {
     throw new CollectionNameError("collections must be an array");
   }
   if (raw.length > MAX_COLLECTIONS_PER_WORK) {
-    throw new CollectionNameError(
-      `A work can belong to at most ${MAX_COLLECTIONS_PER_WORK} collections`,
-    );
+    throw new CollectionNameError('A work belongs to exactly one collection');
   }
 
   const bySlug = new Map();
@@ -269,12 +274,24 @@ function parseDesiredCollections(body) {
   return [...bySlug.values()];
 }
 
+// The wire shape is singular — {collection: "Campus Maps"} — because a work
+// belongs to exactly one. The plural validator underneath is unchanged: a move
+// still has to be reconciled against two collections, so the plumbing below
+// this point keeps working in lists.
+function parseDesiredCollection(body) {
+  const raw = body?.collection;
+  if (raw === null || raw === undefined || raw === '') {
+    throw new CollectionNameError('A work must belong to a collection');
+  }
+  return parseDesiredCollections({collections: [raw]});
+}
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
-// PUT /manifests/{id}/collections
-async function handleManifestCollectionsRoute({
+// PUT /manifests/{id}/collection
+async function handleManifestCollectionRoute({
   method,
   identifier,
   event,
@@ -288,7 +305,7 @@ async function handleManifestCollectionsRoute({
 
   let desired;
   try {
-    desired = parseDesiredCollections(parseBody(event));
+    desired = parseDesiredCollection(parseBody(event));
   } catch (error) {
     if (error instanceof CollectionNameError || error.message === "Invalid JSON payload") {
       return jsonResponse(400, {error: error.message});
@@ -332,10 +349,10 @@ async function handleManifestCollectionsRoute({
     }
 
     // Checked here rather than at the router, because this is the first point
-    // where both sides of the change are known: an editor may only add or
-    // remove collections they hold, and may only touch a work they already
-    // reach through one of them.
-    if (!canSetWorkCollections(principal, previous, canonical)) {
+    // where both ends of the move are known. Taking a work out of someone
+    // else's collection and pushing one into someone else's are the same kind
+    // of act, and an editor may do neither.
+    if (!canMoveWork(principal, previous[0]?.slug || null, canonical[0]?.slug || null)) {
       return jsonResponse(403, {
         error: "You can only move works between collections you have been granted",
       });
@@ -356,7 +373,7 @@ async function handleManifestCollectionsRoute({
       // it belongs to. The client patches what it already holds.
       work: {
         identifier,
-        collections: managedCollectionRefs(next.partOf, {baseUrl}),
+        collection: managedCollectionRefs(next.partOf, {baseUrl})[0] || null,
       },
       // The vocabulary comes back with the write, so the UI needs no follow-up
       // GET and can't race one against its own save.
@@ -374,6 +391,53 @@ async function handleManifestCollectionsRoute({
 
 // GET /collections, POST /collections/reindex
 async function handleCollectionsRoute({method, segments, principal, event}) {
+  // The publish endpoints live under the collection they act on.
+  if (segments.length >= 3 && segments[2] === "publish") {
+    return handlePublishRoute({method, segments, principal, event});
+  }
+
+  // GET /collections/{slug}/works?q=&from=&size=
+  //
+  // Replaces GET /manifests and GET /search together. It is served by the
+  // working index rather than by reading the collection document: at a few
+  // thousand works that document is a multi-megabyte download with no
+  // server-side search, sort or paging. The collection document stays the
+  // authority on membership — it is what publish and repair read — and the
+  // index is the read model the UI queries.
+  if (segments.length === 3 && segments[2] === "works" && method === "GET") {
+    const slug = decodeURIComponent(segments[1]);
+    if (!canViewCollection(principal, slug)) {
+      return jsonResponse(403, {error: "You do not have access to this collection"});
+    }
+    try {
+      const params = event.queryStringParameters || {};
+      const size = Math.min(Number(params.size) || 50, 200);
+      const from = Math.max(Number(params.from) || 0, 0);
+      const root = await ensureRoot();
+      const known = rootCollectionSummaries(root).find((entry) => entry.slug === slug);
+      if (!known) {
+        return jsonResponse(404, {error: `No collection called "${slug}"`});
+      }
+      const [page, counts] = await Promise.all([
+        listWorks({slug, q: params.q, from, size}),
+        syncCounts(slug),
+      ]);
+      return jsonResponse(200, {
+        // The label rides along so the page heading needs no second request.
+        collection: {slug, label: known.label, id: known.id},
+        ...page,
+        from,
+        size,
+        // Counts for the whole collection, not the page: a publish summary
+        // computed from the loaded rows would only be right on page one.
+        counts,
+      });
+    } catch (error) {
+      console.error("List collection works failed", error);
+      return jsonResponse(500, {error: "Unable to list works"});
+    }
+  }
+
   if (segments.length === 1 && method === "GET") {
     try {
       // Exactly one GetObject — the whole point of keeping the root current.
@@ -494,8 +558,25 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
 // neither source knows about.
 async function reindexCollections() {
   const startedAt = Date.now();
+  // Repair rebuilds the working search index from the same pass. The index
+  // holds no state S3 does not determine, which is what makes that possible —
+  // and what stops it from ever being the authority.
+  const indexDocs = [];
   const [summaries, root] = await Promise.all([
-    listManifestSummaries({s3, bucket}),
+    listManifestSummaries({
+      s3,
+      bucket,
+      onManifest: ({identifier, manifest}) => {
+        indexDocs.push(
+          workDocument(identifier, manifest, {
+            // Re-serializing is faithful here: these bytes were written by the
+            // same JSON.stringify(x, null, 2), and object key order survives a
+            // parse/stringify round trip.
+            bytes: JSON.stringify(manifest, null, 2),
+          }),
+        );
+      },
+    }),
     ensureRoot(),
   ]);
   const declared = new Map(rootCollectionSummaries(root).map((entry) => [entry.slug, entry.label]));
@@ -554,11 +635,18 @@ async function reindexCollections() {
   await writeJson(rootCollectionKey(), buildRootCollectionDocument({baseUrl, collections}));
 
   const deleted = await pruneCollections(new Set(bySlug.keys()));
+  const index = await rebuildWorkIndex(indexDocs);
+  // The public sign-in sample used to ride on GET /manifests, which is gone.
+  // This pass has already paid for the corpus read, so it lands here until
+  // the publish run takes it over and builds it from published works instead.
+  await refreshShowcase(summaries);
+
   return {
     collections: collections.length,
     manifests: summaries.length,
     written,
     deleted,
+    index,
     tookMs: Date.now() - startedAt,
   };
 }
@@ -570,7 +658,7 @@ async function pruneCollections(keep) {
     const response = await s3.send(
       new ListObjectsV2Command({
         Bucket: bucket,
-        Prefix: `${COLLECTION_PREFIX}/`,
+        Prefix: `${spaceKey(WORKING, COLLECTION_PREFIX)}/`,
         ContinuationToken: continuationToken,
       }),
     );
@@ -592,8 +680,8 @@ async function pruneCollections(keep) {
 // Files a freshly created work into collections. Shared by the create and the
 // import route so both apply membership the same way; `previous` is empty by
 // construction, since the work did not exist a moment ago.
-async function fileNewWork({identifier, manifest, labels, writeManifest}) {
-  const desired = parseDesiredCollections({collections: labels || []});
+async function fileNewWork({identifier, manifest, label, writeManifest}) {
+  const desired = parseDesiredCollections({collections: label ? [label] : []});
   if (!desired.length) return manifest;
   const root = await ensureRoot();
   const canonical = canonicalizeCollectionLabels(desired, root);
@@ -605,8 +693,8 @@ async function fileNewWork({identifier, manifest, labels, writeManifest}) {
 
 // The slugs a create request is asking for, so the permission check can run
 // before anything is written.
-function desiredCollectionSlugs(labels) {
-  return parseDesiredCollections({collections: labels || []}).map((entry) => entry.slug);
+function desiredCollectionSlugs(label) {
+  return parseDesiredCollections({collections: label ? [label] : []}).map((entry) => entry.slug);
 }
 
 module.exports = {
@@ -617,8 +705,9 @@ module.exports = {
   reconcileManifestCollections,
   reconcileQuietly,
   parseDesiredCollections,
+  parseDesiredCollection,
   handleCollectionsRoute,
-  handleManifestCollectionsRoute,
+  handleManifestCollectionRoute,
   reindexCollections,
   ensureRoot,
   readRoot,

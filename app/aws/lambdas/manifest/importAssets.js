@@ -7,11 +7,11 @@ const {
 } = require("@aws-sdk/client-s3");
 const {LambdaClient, InvokeCommand} = require("@aws-sdk/client-lambda");
 const {Upload} = require("@aws-sdk/lib-storage");
-const {
-  MANIFEST_PREFIX,
-  manifestObjectKey,
-  readManifest: readManifestShared,
-} = require("../../../shared/manifest");
+// One writer, shared with index.js: a private copy here is how the search
+// index silently stopped tracking imported works.
+const {readManifest, writeManifest} = require("./store");
+const {upsertQuietly, SYNC_NEW} = require("./workIndex");
+const {INTERNAL_PREFIX} = require("../../../shared/space");
 
 const s3 = new S3Client({});
 const lambdaClient = new LambdaClient({});
@@ -36,24 +36,14 @@ const IMPORT_BUDGET_MS = 600000;
 // finishing always forces a write, so the status never lags behind reality.
 const STATUS_THROTTLE_MS = 400;
 
+// Outside presentation/ so publish can treat working/presentation/** as
+// "everything a site needs" without filtering, and outside the public bucket
+// policy so operational objects are not world-readable.
 function importStatusKey(identifier) {
-  return `${MANIFEST_PREFIX}/${identifier}/import-status.json`;
+  return `${INTERNAL_PREFIX}/import-status/${identifier}.json`;
 }
 
-async function readManifest(identifier) {
-  return readManifestShared({s3, bucket: iiifBucket, identifier});
-}
 
-async function writeManifest(identifier, manifest) {
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: iiifBucket,
-      Key: manifestObjectKey(identifier),
-      Body: JSON.stringify(manifest, null, 2),
-      ContentType: "application/json",
-    }),
-  );
-}
 
 // This function holds a manifest in memory for minutes at a time — copyCanvasAsset
 // polls up to POLL_TIMEOUT_MS per canvas waiting for the pyramid TIFF — and a
@@ -76,7 +66,9 @@ async function writeManifestItems(identifier, manifest) {
   if (manifest.thumbnail) {
     current.thumbnail = manifest.thumbnail;
   }
-  await writeManifest(identifier, current);
+  // skipIndex: the walk rewrites this once per canvas. The import indexes
+  // once when it starts and once when it finishes.
+  await writeManifest(identifier, current, {skipIndex: true});
 }
 
 async function writeImportStatus(identifier, status) {
@@ -120,6 +112,13 @@ async function triggerAssetImport({identifier, total}) {
     return;
   }
   await writeImportStatus(identifier, {status: "in-progress", total, completed: 0});
+  // The walk skips indexing per canvas, so the index is stamped here and again
+  // at the end. `importing` is what lets a publish refuse to freeze a
+  // half-rewritten manifest.
+  await upsertQuietly(identifier, await readManifest(identifier), {
+    syncState: SYNC_NEW,
+    importing: true,
+  });
   await invokeSelf({action: "importAssets", identifier, canvasIndex: 0});
 }
 
@@ -517,6 +516,15 @@ async function handleImportAssets({identifier, canvasIndex}) {
   if (repointManifestThumbnail(manifest)) {
     await writeManifestItems(identifier, manifest);
   }
+  // The one index write for the whole walk: thumbnails, item count and the
+  // content hash all settle here. Re-read rather than trusting the in-memory
+  // copy, which the walk has been mutating.
+  const finalManifest = await readManifest(identifier);
+  await upsertQuietly(identifier, finalManifest, {
+    bytes: JSON.stringify(finalManifest, null, 2),
+    syncState: SYNC_NEW,
+    importing: false,
+  });
   // A canvas that failed to copy still points at the source, so the import is
   // not "complete" just because the walk reached the end.
   await writeImportStatus(identifier, {

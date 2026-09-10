@@ -3,10 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "esbuild": "^0.25.0",
+    "@aws-crypto/sha256-js": "^5.2.0",
+    "@aws-sdk/client-sfn": "^3.1129.0",
     "@aws-sdk/credential-provider-node": "^3.705.0",
-    "@smithy/signature-v4": "^4.0.0",
     "@smithy/protocol-http": "^4.0.0",
-    "@aws-crypto/sha256-js": "^5.2.0"
+    "@smithy/signature-v4": "^4.0.0",
+    "esbuild": "^0.25.0"
   }
 }

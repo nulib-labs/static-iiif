@@ -4,6 +4,7 @@ const {extractLabel} = require("./language");
 // One-way: collection.js depends on nothing but ./language, so requiring it
 // here is safe and keeps a single definition of the thumbnail rule.
 const {manifestThumbnail} = require("./collection");
+const {WORKING, spaceKey, spaceBase} = require("./space");
 
 const MANIFEST_PREFIX = "presentation/manifest";
 const MANIFEST_OBJECT = "manifest.json";
@@ -25,21 +26,24 @@ function sanitizeManifestIdentifier(raw) {
   return trimmed;
 }
 
-function manifestObjectKey(identifier) {
+// Space-qualified, defaulting to working: every caller but the publish
+// pipeline wants the draft, so the default keeps them correct without
+// threading an argument through twenty call sites.
+function manifestObjectKey(identifier, space = WORKING) {
   const normalized = sanitizeManifestIdentifier(identifier);
-  return `${MANIFEST_PREFIX}/${normalized}/${MANIFEST_OBJECT}`;
+  return spaceKey(space, `${MANIFEST_PREFIX}/${normalized}/${MANIFEST_OBJECT}`);
 }
 
-function buildManifestId(baseUrl, identifier) {
+function buildManifestId(baseUrl, identifier, space = WORKING) {
   const normalizedBase = (baseUrl || "").replace(/\/$/, "");
-  const manifestKey = manifestObjectKey(identifier);
+  const manifestKey = manifestObjectKey(identifier, space);
   return normalizedBase ? `${normalizedBase}/${manifestKey}` : manifestKey;
 }
 
-function createManifestTemplate({baseUrl, identifier, label}) {
+function createManifestTemplate({baseUrl, identifier, label, space = WORKING}) {
   return {
     "@context": "http://iiif.io/api/presentation/3/context.json",
-    id: buildManifestId(baseUrl, identifier),
+    id: buildManifestId(baseUrl, identifier, space),
     type: "Manifest",
     label: {
       none: [label],
@@ -62,8 +66,8 @@ async function streamToString(body) {
   });
 }
 
-async function readManifest({s3, bucket, identifier}) {
-  const key = manifestObjectKey(identifier);
+async function readManifest({s3, bucket, identifier, space = WORKING}) {
+  const key = manifestObjectKey(identifier, space);
   const response = await s3.send(
     new GetObjectCommand({
       Bucket: bucket,
@@ -95,14 +99,14 @@ function partOfRefs(manifest) {
   });
 }
 
-function manifestSummary(identifier, manifest) {
+function manifestSummary(identifier, manifest, space = WORKING) {
   const label = extractLabel(manifest?.label);
   const items = Array.isArray(manifest?.items) ? manifest.items : [];
   return {
     identifier,
     label,
     manifestUrl: manifest?.id || "",
-    relativePath: manifestObjectKey(identifier),
+    relativePath: manifestObjectKey(identifier, space),
     itemCount: items.length,
     thumbnails: items.map(canvasThumbnailService).filter(Boolean),
     partOf: partOfRefs(manifest),
@@ -112,14 +116,17 @@ function manifestSummary(identifier, manifest) {
   };
 }
 
-async function listManifestSummaries({s3, bucket}) {
+// `onManifest` lets a caller do per-manifest work inside this one pass — the
+// index rebuild needs the whole document to hash, and re-reading the corpus a
+// second time would double the IO of the most expensive operation in the app.
+async function listManifestSummaries({s3, bucket, space = WORKING, onManifest}) {
   const manifests = [];
   let continuationToken;
   do {
     const response = await s3.send(
       new ListObjectsV2Command({
         Bucket: bucket,
-        Prefix: `${MANIFEST_PREFIX}/`,
+        Prefix: `${spaceKey(space, MANIFEST_PREFIX)}/`,
         ContinuationToken: continuationToken,
       }),
     );
@@ -128,10 +135,13 @@ async function listManifestSummaries({s3, bucket}) {
     );
     await Promise.all(
       manifestObjects.map(async (object) => {
-        const identifier = object.Key.split("/")[2];
+        // {space}/presentation/manifest/{id}/manifest.json -> index 3
+        const identifier = object.Key.split("/")[3];
         try {
-          const manifest = await readManifest({s3, bucket, identifier});
-          manifests.push(manifestSummary(identifier, manifest));
+          const manifest = await readManifest({s3, bucket, identifier, space});
+          const summary = manifestSummary(identifier, manifest, space);
+          manifests.push(summary);
+          if (onManifest) await onManifest({identifier, manifest, summary});
         } catch (error) {
           console.error(`Failed to read manifest ${object.Key}:`, error);
         }
@@ -148,6 +158,7 @@ async function listManifestSummaries({s3, bucket}) {
 module.exports = {
   MANIFEST_PREFIX,
   MANIFEST_OBJECT,
+  spaceBase,
   manifestIdPattern,
   sanitizeManifestIdentifier,
   manifestObjectKey,

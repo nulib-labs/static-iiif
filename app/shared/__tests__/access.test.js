@@ -15,7 +15,8 @@ const {
   canReindex,
   canEditWork,
   canCreateWork,
-  canSetWorkCollections,
+  canMoveWork,
+  canPublish,
   changedSlugs,
   toSlugArray,
   normalizeRoles,
@@ -28,6 +29,8 @@ const {
 const claims = (groups, rest = {}) => ({sub: "u-1", email: "u@example.edu", "cognito:groups": groups, ...rest});
 const admin = principalFromClaims(claims([ROLE_ADMIN]));
 const editor = principalFromClaims(claims([ROLE_EDITOR, collectionGroupName("eis")]));
+// A grant with no role: read-only sight of that collection, no writes.
+const viewer = principalFromClaims(claims([collectionGroupName("eis")]));
 const stranger = principalFromClaims(claims([]));
 
 test("group names round-trip", () => {
@@ -113,12 +116,16 @@ test("slugs are accepted as bare strings or as {slug} refs", () => {
   assert.equal(canEditWork(editor, [{slug: "eis", label: "EIS"}]), true);
 });
 
-test("an editor must file a new work into a collection they hold", () => {
+test("a new work is filed into exactly one collection, and an editor must hold it", () => {
   assert.equal(canCreateWork(editor, ["eis"]), true);
   assert.equal(canCreateWork(editor, []), false, "would create a work it cannot then edit");
   assert.equal(canCreateWork(editor, ["bikes"]), false);
-  assert.equal(canCreateWork(editor, ["eis", "bikes"]), false, "every target must be held");
-  assert.equal(canCreateWork(admin, []), true);
+  assert.equal(canCreateWork(editor, ["eis", "bikes"]), false, "a work belongs to exactly one");
+  // The uncollected work is gone: an admin names a collection like anyone else,
+  // because there is no longer a state for a work in none to be in.
+  assert.equal(canCreateWork(admin, []), false);
+  assert.equal(canCreateWork(admin, ["anything"]), true);
+  assert.equal(canCreateWork(admin, ["a", "b"]), false);
 });
 
 test("changedSlugs is the symmetric difference, sorted", () => {
@@ -128,23 +135,29 @@ test("changedSlugs is the symmetric difference, sorted", () => {
   assert.deepEqual(changedSlugs(["a", "b"], ["b", "c"]), ["a", "c"]);
 });
 
-test("an editor may only add or remove collections they hold", () => {
-  assert.equal(canSetWorkCollections(editor, ["eis"], ["eis"]), true, "a no-op save");
-  assert.equal(canSetWorkCollections(editor, ["eis"], []), true, "may drop their own collection");
-  assert.equal(canSetWorkCollections(editor, ["eis"], ["eis", "bikes"]), false, "cannot file into another's");
-  assert.equal(canSetWorkCollections(editor, ["bikes"], ["bikes", "eis"]), false, "cannot edit the work at all");
+test("moving a work needs a grant on both ends", () => {
+  assert.equal(canMoveWork(editor, "eis", "eis"), true, "a no-op re-file");
+  assert.equal(canMoveWork(editor, "eis", "bikes"), false, "cannot push into another's");
+  assert.equal(canMoveWork(editor, "bikes", "eis"), false, "cannot pull out of another's");
+  assert.equal(canMoveWork(editor, "eis", ""), false, "a work must land somewhere");
+  assert.equal(canMoveWork(editor, null, "eis"), true, "no origin to hold rights over");
 });
 
-// An editor editing a work that also sits in someone else's collection must not
-// be able to quietly evict it from there.
-test("an editor cannot remove a collection they do not hold", () => {
-  assert.equal(canSetWorkCollections(editor, ["eis", "bikes"], ["eis"]), false);
-  assert.equal(canSetWorkCollections(editor, ["eis", "bikes"], ["eis", "bikes"]), true);
+test("an admin may move a work anywhere; a grant alone may not", () => {
+  assert.equal(canMoveWork(admin, "a", "b"), true);
+  assert.equal(canMoveWork(admin, null, "b"), true);
+  assert.equal(canMoveWork(admin, "a", ""), false, "not even an admin unfiles a work");
+  // A grant without the editor role is read-only sight.
+  assert.equal(canMoveWork(viewer, "eis", "eis"), false);
 });
 
-test("an admin may set any membership", () => {
-  assert.equal(canSetWorkCollections(admin, ["a"], ["b", "c"]), true);
-  assert.equal(canSetWorkCollections(admin, [], ["b"]), true);
+test("publishing is scoped to the collection, not reserved to admins", () => {
+  assert.equal(canPublish(admin, "anything"), true);
+  assert.equal(canPublish(editor, "eis"), true, "an editor owns their own collection's publish");
+  assert.equal(canPublish(editor, "bikes"), false);
+  assert.equal(canPublish(editor, ""), false);
+  assert.equal(canPublish(viewer, "eis"), false, "a grant alone is read-only sight");
+  assert.equal(canPublish(stranger, "eis"), false);
 });
 
 // --- role assignment -------------------------------------------------------
@@ -203,7 +216,6 @@ test("a principal with no sub is not treated as anyone's self", () => {
 // A grant with no role is read-only sight of that collection. This is what
 // makes "show someone a collection without letting them change it" expressible
 // without a third role.
-const viewer = principalFromClaims(claims([collectionGroupName("eis")]));
 
 test("a user with no role and no grant sees nothing", () => {
   assert.equal(canViewWork(stranger, ["eis"]), false);

@@ -1,4 +1,5 @@
 import {useEffect, useState} from "react";
+import {Link as RouterLink} from "react-router-dom";
 import {
   AlertDialog,
   Badge,
@@ -17,7 +18,7 @@ import {
 import {PlusIcon, TrashIcon} from "@radix-ui/react-icons";
 import {COLLECTION_API_BASE, apiFetch} from "../lib/api";
 import {ROLE_ADMIN, useSession} from "../lib/session";
-import PageHeading from "./PageHeading";
+import PageHeading from "../components/PageHeading";
 
 // The root collection caches a thumbnail per collection precisely so a UI like
 // this one does not have to open every leaf. Prefer the image service (a square
@@ -131,7 +132,15 @@ function CollectionRow({collection, isRoot = false, canDelete = false, onDelete}
           <span className="collection-thumb">
             {thumbnail && <img src={thumbnail} alt="" loading="lazy" onError={hideOnError} />}
           </span>
-          <Text weight={isRoot ? "bold" : "medium"}>{collection.label}</Text>
+          {isRoot ? (
+            <Text weight="bold">{collection.label}</Text>
+          ) : (
+            <Text weight="medium" asChild>
+              <RouterLink to={`/collection/${encodeURIComponent(collection.slug)}`}>
+                {collection.label}
+              </RouterLink>
+            </Text>
+          )}
           {isRoot && (
             <Badge size="1" variant="soft" color="gray" radius="full">
               Root

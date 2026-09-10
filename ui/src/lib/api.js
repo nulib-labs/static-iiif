@@ -8,7 +8,6 @@ import {Amplify} from "aws-amplify";
 import {fetchAuthSession} from "aws-amplify/auth";
 
 export const MANIFEST_API_BASE = (import.meta.env.VITE_MANIFEST_API_URL || "").replace(/\/$/, "");
-export const SEARCH_API_BASE = (import.meta.env.VITE_SEARCH_API_URL || "").replace(/\/$/, "");
 // VITE_MANIFEST_API_URL already ends in /manifests, so the collections
 // vocabulary is a sibling endpoint rather than a child of it. The fallback
 // derives one so the feature still works against a stack deployed before the
@@ -17,6 +16,11 @@ export const COLLECTION_API_BASE = (
   import.meta.env.VITE_COLLECTION_API_URL ||
   (/\/manifests$/.test(MANIFEST_API_BASE) ? MANIFEST_API_BASE.replace(/\/manifests$/, "/collections") : "")
 ).replace(/\/$/, "");
+// /manifests, /collections and /users are siblings, so /users is derived the
+// same way the collections base is.
+export const USER_API_BASE = /\/manifests$/.test(MANIFEST_API_BASE)
+  ? MANIFEST_API_BASE.replace(/\/manifests$/, "/users")
+  : "";
 export const STORAGE_BUCKET = import.meta.env.VITE_STORAGE_BUCKET || "";
 export const STORAGE_REGION =
   import.meta.env.VITE_STORAGE_REGION || import.meta.env.VITE_AWS_REGION || "";
@@ -76,7 +80,23 @@ export async function apiFetch(url, {method = "GET", body, errorMessage = "Reque
   return data;
 }
 
-export function searchApiUrl(query) {
-  if (!SEARCH_API_BASE) return null;
-  return `${SEARCH_API_BASE}?q=${encodeURIComponent(query)}`;
+// The collection's works, filtered and paged by the server. Replaces the old
+// GET /manifests corpus listing and GET /search together — they are one query
+// now, against that collection's slice of the working index.
+export function collectionWorksUrl(slug, {q = "", from = 0, size = 50} = {}) {
+  if (!COLLECTION_API_BASE) return null;
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  if (from) params.set("from", String(from));
+  params.set("size", String(size));
+  return `${COLLECTION_API_BASE}/${encodeURIComponent(slug)}/works?${params}`;
+}
+
+// Join the manifests base with a suffix. Both the collection works list and the
+// work page build URLs this way, so it lives here rather than being redefined
+// in each.
+export function manifestApiUrl(path = "") {
+  if (!MANIFEST_API_BASE) return null;
+  const suffix = path ? `/${path.replace(/^\/+/, "")}` : "";
+  return `${MANIFEST_API_BASE}${suffix}`;
 }

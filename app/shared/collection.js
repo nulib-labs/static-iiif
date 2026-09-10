@@ -9,6 +9,7 @@
 // at module scope, and pulling that in would make these pure functions
 // untestable without it.
 const {languageMap, extractLabel} = require("./language");
+const {WORKING, spaceKey} = require("./space");
 
 const COLLECTION_PREFIX = "presentation/collection";
 const COLLECTION_OBJECT = "collection.json";
@@ -26,12 +27,19 @@ const PRESENTATION_CONTEXT = "http://iiif.io/api/presentation/3/context.json";
 // dropping it would make `staticiiif:managed` silently fail to expand.
 const STATIC_IIIF_PREFIX = "staticiiif";
 const STATIC_IIIF_NAMESPACE = "https://nulib-labs.github.io/static-iiif/ns#";
-const MANAGED_KEY = `${STATIC_IIIF_PREFIX}:managed`;
-const ITEM_COUNT_KEY = `${STATIC_IIIF_PREFIX}:itemCount`;
+// Absolute IRIs, not `staticiiif:`-prefixed compact IRIs. A compact IRI needs a
+// prefix declared in @context, and declaring one means putting an object into
+// the @context array — which is legal JSON-LD 1.1 and which Clover cannot read
+// (see normalizeContext). An absolute IRI expands on its own.
+const MANAGED_KEY = `${STATIC_IIIF_NAMESPACE}managed`;
+const ITEM_COUNT_KEY = `${STATIC_IIIF_NAMESPACE}itemCount`;
 
 const MAX_LABEL_LENGTH = 200;
 const MAX_SLUG_LENGTH = 96;
-const MAX_COLLECTIONS_PER_WORK = 32;
+// A work belongs to exactly one collection. This is the single place the rule
+// is enforced; the plumbing below still works in lists, because a move touches
+// two collections and reconciliation has to see both.
+const MAX_COLLECTIONS_PER_WORK = 1;
 
 const collectionSlugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const collectionIdPattern = /\/presentation\/collection\/([a-z0-9-]+)\/collection\.json$/;
@@ -107,22 +115,22 @@ function sanitizeCollectionSlug(raw) {
 
 // Deliberately does not run the reserved-slug check, so rootCollectionKey can
 // call through it.
-function collectionObjectKey(slug) {
-  return `${COLLECTION_PREFIX}/${slug}/${COLLECTION_OBJECT}`;
+function collectionObjectKey(slug, space = WORKING) {
+  return spaceKey(space, `${COLLECTION_PREFIX}/${slug}/${COLLECTION_OBJECT}`);
 }
 
-function rootCollectionKey() {
-  return collectionObjectKey(ROOT_COLLECTION_SLUG);
+function rootCollectionKey(space = WORKING) {
+  return collectionObjectKey(ROOT_COLLECTION_SLUG, space);
 }
 
-function buildCollectionId(baseUrl, slug) {
+function buildCollectionId(baseUrl, slug, space = WORKING) {
   const normalizedBase = (baseUrl || "").replace(/\/$/, "");
-  const key = collectionObjectKey(slug);
+  const key = collectionObjectKey(slug, space);
   return normalizedBase ? `${normalizedBase}/${key}` : key;
 }
 
-function buildRootCollectionId(baseUrl) {
-  return buildCollectionId(baseUrl, ROOT_COLLECTION_SLUG);
+function buildRootCollectionId(baseUrl, space = WORKING) {
+  return buildCollectionId(baseUrl, ROOT_COLLECTION_SLUG, space);
 }
 
 function collectionSlugFromId(id) {
@@ -131,29 +139,33 @@ function collectionSlugFromId(id) {
 }
 
 // Presentation 3.0: the value must be the presentation context URI, or an array
-// with it as the LAST item, with extension contexts added before it. Our prefix
-// object sits last among the extensions so its term definition cannot be
-// shadowed by a foreign context the manifest arrived with.
-function mergeContext(existing, {managed}) {
+// with it LAST. This only ever normalizes what a manifest arrived with — we add
+// no extension context of our own.
+//
+// We used to declare a `staticiiif` prefix here as an inline term-definition
+// object, so `staticiiif:managed` would expand. That is valid JSON-LD 1.1 and
+// it broke Clover: it maps over @context calling `.replace("http://","https://")`
+// on every entry, guarding only against null, so an object entry threw
+// "r.replace is not a function" and the viewer never rendered. Clover is what
+// Canopy uses, so a manifest we publish with an object in @context breaks
+// downstream consumers too, not just this app.
+//
+// The extension terms are absolute IRIs now (see MANAGED_KEY). An absolute IRI
+// needs no prefix declaration, so @context goes back to being the bare
+// presentation string and there is nothing for a consumer to trip over.
+function normalizeContext(existing) {
   const entries = Array.isArray(existing) ? existing : existing ? [existing] : [];
   const foreign = entries.filter((entry) => {
     if (entry === PRESENTATION_CONTEXT) return false;
+    // Shed any prefix declaration — ours, from before this changed, or another
+    // deployment's that came in with an import.
     if (entry && typeof entry === "object" && !Array.isArray(entry)) {
       const keys = Object.keys(entry);
-      // Drop any prior staticiiif prefix definition — ours is re-added below,
-      // and this also sheds the namespace of another deployment we imported from.
       return !(keys.length === 1 && keys[0] === STATIC_IIIF_PREFIX);
     }
     return true;
   });
-
-  const next = [...foreign];
-  if (managed) {
-    next.push({[STATIC_IIIF_PREFIX]: STATIC_IIIF_NAMESPACE});
-  }
-  next.push(PRESENTATION_CONTEXT);
-  // Collapse back to the bare string when nothing else is present, so an
-  // unmanaged manifest stays byte-identical to createManifestTemplate's output.
+  const next = [...foreign, PRESENTATION_CONTEXT];
   return next.length === 1 ? PRESENTATION_CONTEXT : next;
 }
 
@@ -201,6 +213,12 @@ function managedCollectionRefs(partOf, {baseUrl} = {}) {
 
 // Everything that is not ours — an imported manifest's link back to the source
 // institution's collection, which we preserve verbatim.
+// The one collection a work belongs to, or null. managedCollectionRefs stays
+// for reconciliation and for reading a manifest that predates the rule.
+function managedCollectionRef(partOf, options = {}) {
+  return managedCollectionRefs(partOf, options)[0] || null;
+}
+
 function foreignPartOfEntries(partOf, {baseUrl} = {}) {
   return partOfEntries(partOf).filter((entry) => !isManagedPartOfEntry(entry, {baseUrl}));
 }
@@ -221,9 +239,7 @@ function stripForeignManagedEntries(manifest, {baseUrl}) {
   } else {
     delete next.partOf;
   }
-  next["@context"] = mergeContext(manifest?.["@context"], {
-    managed: kept.some((entry) => isManagedPartOfEntry(entry, {baseUrl})),
-  });
+  next["@context"] = normalizeContext(manifest?.["@context"]);
   return next;
 }
 
@@ -245,7 +261,7 @@ function applyCollections(manifest, {baseUrl, collections}) {
     // rather than writing an empty array.
     delete next.partOf;
   }
-  next["@context"] = mergeContext(manifest?.["@context"], {managed: ours.length > 0});
+  next["@context"] = normalizeContext(manifest?.["@context"]);
   return next;
 }
 
@@ -315,7 +331,7 @@ function buildRootCollectionDocument({baseUrl, collections}) {
     buildCollectionReference({baseUrl, ...collection}),
   );
   return {
-    "@context": mergeContext(null, {managed: items.length > 0}),
+    "@context": PRESENTATION_CONTEXT,
     id: buildRootCollectionId(baseUrl),
     type: "Collection",
     label: languageMap(ROOT_COLLECTION_LABEL),
@@ -493,10 +509,11 @@ module.exports = {
   buildCollectionId,
   buildRootCollectionId,
   collectionSlugFromId,
-  mergeContext,
+  normalizeContext,
   buildPartOfEntry,
   isManagedPartOfEntry,
   managedCollectionRefs,
+  managedCollectionRef,
   foreignPartOfEntries,
   stripForeignManagedEntries,
   applyCollections,
