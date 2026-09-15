@@ -20,7 +20,7 @@
 // collection because that is what makes the alias flip atomic for one
 // collection without touching another's.
 
-const {slugifyCollectionLabel, collectionSlugPattern} = require("./collection");
+const {collectionSlugPattern} = require("./collection");
 
 // "." separates the parts, not "-": a slug is [a-z0-9-]+, so with a hyphen the
 // staged alias of `my-coll` and the live alias of `my-coll-staged` would be
@@ -204,5 +204,4 @@ module.exports = {
   SYNC_PUBLISHED,
   buildWorkingDocument,
   buildPublishedDocument,
-  slugifyCollectionLabel,
 };

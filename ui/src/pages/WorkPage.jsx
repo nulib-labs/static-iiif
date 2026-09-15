@@ -352,14 +352,18 @@ export default function WorkPage() {
   // partOf, which nothing in the viewer reads, and remounting Clover would
   // throw away the user's zoom and page position for a change it cannot see.
   const moveWork = useCallback(
-    async (label) => {
+    // targetSlug, not slug: `slug` is already the collection in the URL, and
+    // shadowing it here would turn the staleness check below into a comparison
+    // against itself — so the address bar would keep pointing at the collection
+    // the work just left.
+    async (targetSlug) => {
       if (!selectedManifestId) {
         throw new Error("Select a work first");
       }
       const endpoint = manifestApiUrl(`${encodeURIComponent(selectedManifestId)}/collection`);
       const data = await apiFetch(endpoint, {
         method: "PUT",
-        body: {collection: label},
+        body: {collection: targetSlug},
         errorMessage: "Unable to move this work",
       });
       const next = data.work?.collection ?? null;

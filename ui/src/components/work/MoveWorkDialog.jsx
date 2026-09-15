@@ -48,7 +48,10 @@ export default function MoveWorkDialog({open, currentSlug, onCancel, onMove}) {
     setSaving(true);
     setError(null);
     try {
-      await onMove(collections.find((entry) => entry.slug === target)?.label || target);
+      // The slug, straight through. This used to look the label back up because
+      // the API took a name and reduced it to a slug; it takes the slug now, so
+      // the round trip through the display string is gone.
+      await onMove(target);
     } catch (err) {
       setError(err.message);
     } finally {

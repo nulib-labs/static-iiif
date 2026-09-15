@@ -17,6 +17,11 @@ import {
 } from "@radix-ui/themes";
 import {PlusIcon, TrashIcon} from "@radix-ui/react-icons";
 import {COLLECTION_API_BASE, apiFetch} from "../lib/api";
+import {
+  suggestCollectionSlug,
+  collectionSlugError,
+  previewCollectionUrl,
+} from "../lib/collectionSlug";
 import {ROLE_ADMIN, useSession} from "../lib/session";
 import PageHeading from "../components/PageHeading";
 
@@ -44,11 +49,34 @@ function hideOnError(event) {
   event.currentTarget.style.visibility = "hidden";
 }
 
-// Matches the Add dialog on Works: one field, same buttons, same size.
-function AddCollectionDialog({open, onOpenChange, onCreate}) {
+// Two fields, because a collection has two independent things: a name, which is
+// a display string in any language, and an id, which is permanent and public.
+//
+// The id is PREFILLED from the name and then left alone once the curator edits
+// it. That derivation lives here rather than on the server on purpose — a server
+// that derives one from the other makes the name into identity, which is what
+// stopped a collection ever being named in a non-Latin script.
+function AddCollectionDialog({open, onOpenChange, onCreate, rootId}) {
   const [label, setLabel] = useState("");
+  const [slug, setSlug] = useState("");
+  const [slugEdited, setSlugEdited] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+
+  const reset = () => {
+    setLabel("");
+    setSlug("");
+    setSlugEdited(false);
+    setError(null);
+  };
+
+  const onLabelChange = (next) => {
+    setLabel(next);
+    if (!slugEdited) setSlug(suggestCollectionSlug(next));
+  };
+
+  const slugProblem = slug || slugEdited ? collectionSlugError(slug) : null;
+  const previewUrl = previewCollectionUrl(rootId, slug);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -57,11 +85,16 @@ function AddCollectionDialog({open, onOpenChange, onCreate}) {
       setError("A name is required");
       return;
     }
+    const problem = collectionSlugError(slug);
+    if (problem) {
+      setError(problem);
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
-      await onCreate(name);
-      setLabel("");
+      await onCreate({label: name, slug});
+      reset();
       onOpenChange(false);
     } catch (err) {
       setError(err.message);
@@ -74,10 +107,7 @@ function AddCollectionDialog({open, onOpenChange, onCreate}) {
     <Dialog.Root
       open={open}
       onOpenChange={(next) => {
-        if (!next) {
-          setLabel("");
-          setError(null);
-        }
+        if (!next) reset();
         onOpenChange(next);
       }}
     >
@@ -92,14 +122,34 @@ function AddCollectionDialog({open, onOpenChange, onCreate}) {
               <TextField.Root
                 autoFocus
                 value={label}
-                onChange={(event) => setLabel(event.target.value)}
+                onChange={(event) => onLabelChange(event.target.value)}
                 placeholder="e.g. Environmental Impact Statements"
               />
               <Text as="div" size="1" color="gray" mt="1">
-                Its id is derived from the name — &ldquo;Environmental Impact Statements&rdquo;
-                becomes <code>environmental-impact-statements</code>. The name can&rsquo;t be
-                changed later.
+                Shown throughout the app. Any language.
               </Text>
+            </label>
+            <label>
+              <Text as="div" size="2" weight="medium" mb="1">
+                Id
+              </Text>
+              <TextField.Root
+                value={slug}
+                onChange={(event) => {
+                  setSlugEdited(true);
+                  setSlug(event.target.value);
+                }}
+                placeholder="e.g. environmental-impact-statements"
+              />
+              <Text as="div" size="1" color={slugProblem ? "red" : "gray"} mt="1">
+                {slugProblem ||
+                  "Lowercase letters, numbers and dashes. Permanent — it is part of every URL this collection publishes, and no route can change it later."}
+              </Text>
+              {previewUrl && !slugProblem && (
+                <Text as="div" size="1" color="gray" mt="1">
+                  <code>{previewUrl}</code>
+                </Text>
+              )}
             </label>
             {error && (
               <Callout.Root color="red" size="1">
@@ -232,10 +282,10 @@ export default function CollectionsPage() {
     };
   }, [available]);
 
-  const handleCreate = async (label) => {
+  const handleCreate = async ({label, slug}) => {
     const data = await apiFetch(COLLECTION_API_BASE, {
       method: "POST",
-      body: {label},
+      body: {label, slug},
       errorMessage: "Unable to create collection",
     });
     // The API returns the whole list back, so the table never has to refetch.
@@ -343,7 +393,12 @@ export default function CollectionsPage() {
           )}
         </Box>
       </Card>
-      <AddCollectionDialog open={adding} onOpenChange={setAdding} onCreate={handleCreate} />
+      <AddCollectionDialog
+        open={adding}
+        onOpenChange={setAdding}
+        onCreate={handleCreate}
+        rootId={root?.id || null}
+      />
     </Flex>
   );
 }

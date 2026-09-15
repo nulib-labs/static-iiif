@@ -46,13 +46,15 @@ const collectionIdPattern = /\/presentation\/collection\/([a-z0-9-]+)\/collectio
 
 class CollectionNameError extends Error {}
 
-// "Environmental Impact Statements" -> "environmental-impact-statements".
+// The label is a display string and nothing else. It is NOT reduced to a slug
+// here, and never should be again.
 //
-// The slug IS the collection's identity: two labels that reduce to the same
-// slug are the same collection, which is what lets the autocomplete forgive
-// case, punctuation and stray whitespace. Idempotent, so it is safe to run over
-// a value that is already a slug.
-function slugifyCollectionLabel(raw) {
+// The slug used to be derived from this, which quietly turned a mutable display
+// string into a permanent identifier — and meant a collection could not be named
+// in any non-Latin script at all: "日本語資料" reduced to the empty string and
+// threw. A curator now names the collection in whatever language the material is
+// in, and chooses an ASCII slug alongside it.
+function sanitizeCollectionLabel(raw) {
   const trimmed = String(raw ?? "").trim();
   if (!trimmed) {
     throw new CollectionNameError("A collection name is required");
@@ -62,41 +64,18 @@ function slugifyCollectionLabel(raw) {
       `Collection names are limited to ${MAX_LABEL_LENGTH} characters`,
     );
   }
-
-  let slug = trimmed
-    // NFKD splits accented characters into base + combining mark, so stripping
-    // the marks turns "Café" into "cafe" rather than "caf".
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  if (slug.length > MAX_SLUG_LENGTH) {
-    slug = slug.slice(0, MAX_SLUG_LENGTH);
-    const lastDash = slug.lastIndexOf("-");
-    if (lastDash > 0) {
-      slug = slug.slice(0, lastDash);
-    }
-    slug = slug.replace(/-+$/, "");
-  }
-
-  if (!slug) {
-    throw new CollectionNameError(
-      `"${trimmed}" doesn't contain any letters or numbers to build a collection name from`,
-    );
-  }
-  if (slug === ROOT_COLLECTION_SLUG) {
-    throw new CollectionNameError(
-      `"${trimmed}" is a reserved collection name — please choose another`,
-    );
-  }
-  return slug;
+  return trimmed;
 }
 
-// Validates a value that is already a slug without transforming it. Used when
-// reading slugs back out of stored ids, where a silent rewrite would mask
-// corruption rather than surface it.
+// Validates a value that is already a slug without transforming it — both for a
+// slug arriving from a client, and for one read back out of a stored id, where a
+// silent rewrite would mask corruption rather than surface it.
+//
+// A chosen slug is permanent and public, so this is the only gate it passes
+// through. The pattern forbids a leading "-" or "_", which is what keeps a
+// user-chosen slug structurally unable to collide with the reserved
+// "_"-prefixed index segments in search.js — that collision used to be defended
+// by naming convention alone (see AGENTS.md on {prefix}.working).
 function sanitizeCollectionSlug(raw) {
   const trimmed = String(raw ?? "").trim();
   if (!trimmed) {
@@ -105,6 +84,14 @@ function sanitizeCollectionSlug(raw) {
   if (!collectionSlugPattern.test(trimmed)) {
     throw new CollectionNameError(
       "Collection ids may only include lowercase letters, numbers, and single dashes",
+    );
+  }
+  // Bounded here rather than by the pattern so the message can say why. It used
+  // to be enforced by the truncation inside the old slugifier; nothing enforced
+  // it on a slug that arrived already-formed.
+  if (trimmed.length > MAX_SLUG_LENGTH) {
+    throw new CollectionNameError(
+      `Collection ids are limited to ${MAX_SLUG_LENGTH} characters`,
     );
   }
   if (trimmed === ROOT_COLLECTION_SLUG) {
@@ -391,10 +378,14 @@ function membersOf(document) {
   return Array.isArray(document?.items) ? document.items.filter((item) => item && item.id) : [];
 }
 
-// A collection's name is set by whoever created it. A later curator typing
-// "campus maps" joins the existing "Campus Maps" rather than renaming it — and
-// that has to apply to the label cached in their manifest's own partOf too, or
-// the work would display a name the collection does not actually have.
+// Resolve each slug to the label the collection actually carries.
+//
+// This used to correct a curator's spelling — the wire shape was a label, so
+// typing "campus maps" had to be reconciled with the existing "Campus Maps".
+// The wire shape is a slug now, so there is no spelling to forgive; what is
+// left is the lookup, which is still needed because applyCollections caches the
+// label inside each manifest's partOf and that cache has to match the
+// collection's real name.
 function canonicalizeCollectionLabels(desired, root) {
   const canonical = new Map(rootCollectionSummaries(root).map((entry) => [entry.slug, entry.label]));
   return (desired || []).map((entry) => ({
@@ -502,7 +493,7 @@ module.exports = {
   MAX_COLLECTIONS_PER_WORK,
   collectionSlugPattern,
   CollectionNameError,
-  slugifyCollectionLabel,
+  sanitizeCollectionLabel,
   sanitizeCollectionSlug,
   collectionObjectKey,
   rootCollectionKey,

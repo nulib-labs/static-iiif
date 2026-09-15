@@ -23,7 +23,8 @@ const {
   ROOT_COLLECTION_SLUG,
   MAX_COLLECTIONS_PER_WORK,
   CollectionNameError,
-  slugifyCollectionLabel,
+  sanitizeCollectionLabel,
+  sanitizeCollectionSlug,
   collectionObjectKey,
   rootCollectionKey,
   managedCollectionRefs,
@@ -267,14 +268,19 @@ function parseDesiredCollections(body) {
     if (typeof entry !== "string" || !entry.trim()) {
       throw new CollectionNameError("Each collection must be a non-empty string");
     }
-    const slug = slugifyCollectionLabel(entry);
-    // First occurrence wins, so a caller sending both "Maps" and "maps" gets one.
-    if (!bySlug.has(slug)) bySlug.set(slug, {slug, label: entry.trim()});
+    // A slug, not a label. The client sends the collection's identity; it does
+    // not send a name for the server to reduce into one.
+    //
+    // The label is filled in downstream by canonicalizeCollectionLabels, which
+    // reads it off the root document — so a work can never cache a name the
+    // collection does not actually have, and there is no spelling to forgive.
+    const slug = sanitizeCollectionSlug(entry);
+    if (!bySlug.has(slug)) bySlug.set(slug, {slug, label: null});
   }
   return [...bySlug.values()];
 }
 
-// The wire shape is singular — {collection: "Campus Maps"} — because a work
+// The wire shape is singular — {collection: "campus-maps"} — because a work
 // belongs to exactly one. The plural validator underneath is unchanged: a move
 // still has to be reconciled against two collections, so the plumbing below
 // this point keeps working in lists.
@@ -463,14 +469,17 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
     }
     try {
       const body = parseBody(event);
-      const label = typeof body.label === "string" ? body.label.trim() : "";
-      if (!label) {
-        return jsonResponse(400, {error: "A name is required"});
-      }
-      const slug = slugifyCollectionLabel(label);
+      // Two independent fields. The label is a display string in any script;
+      // the slug is the permanent, public identifier, chosen once here and
+      // changeable by no route afterwards. The UI prefills the slug from the
+      // label as a convenience, but that derivation lives in the client on
+      // purpose: the moment the server derives one from the other, the label
+      // becomes identity again.
+      const label = sanitizeCollectionLabel(body.label);
+      const slug = sanitizeCollectionSlug(body.slug);
       const root = await ensureRoot();
       if (rootCollectionSummaries(root).some((entry) => entry.slug === slug)) {
-        return jsonResponse(409, {error: `A collection named "${label}" already exists`});
+        return jsonResponse(409, {error: `The id "${slug}" is already taken`});
       }
       // An empty IIIF Collection, not a placeholder: `items: []` is what the
       // spec allows and what makes this a real, resolvable document from the
@@ -680,8 +689,8 @@ async function pruneCollections(keep) {
 // Files a freshly created work into collections. Shared by the create and the
 // import route so both apply membership the same way; `previous` is empty by
 // construction, since the work did not exist a moment ago.
-async function fileNewWork({identifier, manifest, label, writeManifest}) {
-  const desired = parseDesiredCollections({collections: label ? [label] : []});
+async function fileNewWork({identifier, manifest, slug, writeManifest}) {
+  const desired = parseDesiredCollections({collections: slug ? [slug] : []});
   if (!desired.length) return manifest;
   const root = await ensureRoot();
   const canonical = canonicalizeCollectionLabels(desired, root);
@@ -692,9 +701,10 @@ async function fileNewWork({identifier, manifest, label, writeManifest}) {
 }
 
 // The slugs a create request is asking for, so the permission check can run
-// before anything is written.
-function desiredCollectionSlugs(label) {
-  return parseDesiredCollections({collections: label ? [label] : []}).map((entry) => entry.slug);
+// before anything is written. Takes a slug, not a label — see
+// parseDesiredCollections.
+function desiredCollectionSlugs(slug) {
+  return parseDesiredCollections({collections: slug ? [slug] : []}).map((entry) => entry.slug);
 }
 
 module.exports = {

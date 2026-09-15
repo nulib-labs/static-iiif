@@ -232,10 +232,11 @@ export default function CollectionWorksPage() {
     }
   };
 
-  // The collection is the page you are on, so it is never asked for. The API
-  // resolves by label, and a slug is its own label after slugify, so the
-  // fallback is safe while the vocabulary is still loading.
-  const newWorkCollectionBody = () => ({collection: collectionLabel});
+  // The collection is the page you are on, so it is never asked for. The slug
+  // comes straight from the route: the API takes a slug now and does not reduce
+  // a label into one, so sending collectionLabel here would only work for the
+  // collections whose name happens to slugify back to their id.
+  const newWorkCollectionBody = () => ({collection: slug});
 
   const handleManifestSubmit = async (event) => {
     event.preventDefault();
