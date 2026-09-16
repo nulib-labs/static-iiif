@@ -172,10 +172,6 @@ Resources:
                 "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${IIIFDistribution}"
 
   # --- CDN --------------------------------------------------------------------
-  #
-  # Policies are declared rather than borrowed from the AWS managed set: the
-  # cache key is the whole point of the image distribution, and a magic GUID in
-  # the template would hide it.
 
   IIIFOriginAccessControl:
     Type: AWS::CloudFront::OriginAccessControl
@@ -204,77 +200,15 @@ Resources:
           AccessControlMaxAgeSec: 3600
           OriginOverride: true
 
-  # The IIIF Image API encodes the entire request in the path —
-  # /{id}/{region}/{size}/{rotation}/{quality}.{format} — so the path alone is a
-  # complete and correct cache key. Anything else in the key would only fragment
-  # it. Accept-Encoding stays out for the same reason: tiles are already-
-  # compressed JPEG/PNG, and varying on it would multiply every tile entry.
-  ImageApiCachePolicy:
-    Type: AWS::CloudFront::CachePolicy
-    Properties:
-      CachePolicyConfig:
-        Name: !Sub "${AWS::StackName}-image-api"
-        Comment: "Tiles are immutable: cache on path only, for a long time."
-        MinTTL: 0
-        DefaultTTL: 86400
-        MaxTTL: 31536000
-        ParametersInCacheKeyAndForwardedToOrigin:
-          EnableAcceptEncodingGzip: false
-          EnableAcceptEncodingBrotli: false
-          CookiesConfig:
-            CookieBehavior: none
-          HeadersConfig:
-            HeaderBehavior: none
-          QueryStringsConfig:
-            QueryStringBehavior: none
-
-  PublishedCachePolicy:
-    Type: AWS::CloudFront::CachePolicy
-    Properties:
-      CachePolicyConfig:
-        Name: !Sub "${AWS::StackName}-published"
-        Comment: "Published IIIF documents. Long-lived; the publish run invalidates them."
-        MinTTL: 0
-        DefaultTTL: 86400
-        MaxTTL: 31536000
-        ParametersInCacheKeyAndForwardedToOrigin:
-          EnableAcceptEncodingGzip: true
-          EnableAcceptEncodingBrotli: true
-          CookiesConfig:
-            CookieBehavior: none
-          HeadersConfig:
-            HeaderBehavior: none
-          QueryStringsConfig:
-            QueryStringBehavior: none
-
-  # Working documents are routed through the distribution but never cached by it.
-  # Every save is followed almost immediately by a read that has to see it — the
-  # same read-your-write constraint that makes the OpenSearch writes use
-  # ?refresh=wait_for — so any TTL here shows a curator their previous draft and
-  # reads as "the save did nothing".
-  WorkingCachePolicy:
-    Type: AWS::CloudFront::CachePolicy
-    Properties:
-      CachePolicyConfig:
-        Name: !Sub "${AWS::StackName}-working"
-        Comment: "Drafts: pass through to S3 on every request."
-        MinTTL: 0
-        DefaultTTL: 0
-        MaxTTL: 0
-        ParametersInCacheKeyAndForwardedToOrigin:
-          # Must both be false: CloudFront rejects the whole policy otherwise
-          # ("invalid for policy with caching disabled"). They describe how
-          # Accept-Encoding enters the CACHE KEY, and a policy with every TTL at
-          # zero has no cache to key into. Responses are still compressed — that
-          # is `Compress` on the behaviour, which is a separate setting.
-          EnableAcceptEncodingGzip: false
-          EnableAcceptEncodingBrotli: false
-          CookiesConfig:
-            CookieBehavior: none
-          HeadersConfig:
-            HeaderBehavior: none
-          QueryStringsConfig:
-            QueryStringBehavior: none
+  # Cache policies are the AWS MANAGED ones, referenced by id below rather than
+  # declared here. Custom cache policies are capped at 20 per ACCOUNT — shared
+  # with every other project in it — and three per stack would put a ceiling of
+  # about five personal stacks on that. Managed policies are AWS-owned and count
+  # against nothing.
+  #
+  # All three declared policies turned out to have exact managed equivalents, so
+  # this costs no behaviour. What each one is, and why it is the right one, is
+  # recorded at the cache behaviour that uses it.
 
   IIIFDistribution:
     Type: AWS::CloudFront::Distribution
@@ -308,7 +242,11 @@ Resources:
           AllowedMethods: [GET, HEAD, OPTIONS]
           CachedMethods: [GET, HEAD, OPTIONS]
           Compress: true
-          CachePolicyId: !Ref PublishedCachePolicy
+          # CachingOptimized: no cookies, headers or query strings in the key,
+          # Accept-Encoding normalized in. Long-lived; the publish run
+          # invalidates it. MinTTL is 1s rather than 0, which only means an
+          # origin "no-cache" is honoured a second late — irrelevant here.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
           ResponseHeadersPolicyId: !Ref IiifCorsPolicy
         CacheBehaviors:
           - PathPattern: "working/*"
@@ -317,7 +255,12 @@ Resources:
             AllowedMethods: [GET, HEAD, OPTIONS]
             CachedMethods: [GET, HEAD, OPTIONS]
             Compress: true
-            CachePolicyId: !Ref WorkingCachePolicy
+            # CachingDisabled: every TTL 0, so this is a pass-through to S3 and
+            # every request sees current bytes. That is the point — a save is
+            # followed almost immediately by a read that has to see it, the same
+            # read-your-write constraint behind ?refresh=wait_for on the index,
+            # and any TTL here reads as "the save did nothing".
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
             ResponseHeadersPolicyId: !Ref IiifCorsPolicy
 
   ImagesDistribution:
@@ -350,7 +293,15 @@ Resources:
           AllowedMethods: [GET, HEAD, OPTIONS]
           CachedMethods: [GET, HEAD, OPTIONS]
           Compress: false
-          CachePolicyId: !Ref ImageApiCachePolicy
+          # CachingOptimizedForUncompressedObjects: same minimal key as
+          # CachingOptimized, but WITHOUT Accept-Encoding. That distinction is
+          # the whole reason this differs from the document distribution — the
+          # IIIF Image API encodes the entire request in the path
+          # (/{id}/{region}/{size}/{rotation}/{quality}.{format}), so the path
+          # alone is a complete cache key, and tiles are already-compressed JPEG
+          # or PNG. Varying on Accept-Encoding would multiply every tile entry
+          # for nothing.
+          CachePolicyId: b2884449-e4de-46a7-ac36-70bc7f1ddd6d
           ResponseHeadersPolicyId: !Ref IiifCorsPolicy
 
   # Z2FDTNDATAQYW2 is CloudFront's fixed hosted zone id — the same value in every
