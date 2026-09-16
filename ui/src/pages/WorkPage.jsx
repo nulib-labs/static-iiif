@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {Link as RouterLink, useNavigate, useParams} from "react-router-dom";
-import {Box, Button, Callout, Card, DropdownMenu, Flex, SegmentedControl, Text} from "@radix-ui/themes";
+import {Box, Button, Callout, Card, Flex, SegmentedControl, Text} from "@radix-ui/themes";
 import {ArrowUpIcon} from "@radix-ui/react-icons";
 import CloverViewer from "@samvera/clover-iiif/viewer";
 import {arrayMove} from "@dnd-kit/sortable";
@@ -45,23 +45,12 @@ function WorkDetailPanel({
   const importInProgress = importStatus?.status === "in-progress" && !isStale;
   const [resumeError, setResumeError] = useState(null);
   const [section, setSection] = useState("assets");
-  const [sharedNotice, setSharedNotice] = useState(null);
-
-  // Copy rather than open: "Share" is about handing the URL to someone else, and
-  // the raw manifest is already one click away in the viewer's About panel.
-  const handleShareManifest = async () => {
-    const url = manifestDetail?.manifestUrl;
-    if (!url) return;
-    try {
-      await navigator.clipboard.writeText(url);
-      setSharedNotice("Copied!");
-    } catch {
-      // Clipboard access can be blocked; fall back to opening the manifest.
-      window.open(url, "_blank", "noopener");
-      setSharedNotice("Opened");
-    }
-    setTimeout(() => setSharedNotice(null), 1500);
-  };
+  // A "Share" menu used to sit beside the section control, copying this work's
+  // WORKING manifest URL to the clipboard. Removed deliberately: its only
+  // purpose was handing a draft URL to someone else, and a draft URL pasted
+  // into a Canopy config builds a site against content that changes under it.
+  // What a downstream site should consume is the published collection, which
+  // PublishPanel shows under "what a downstream site consumes".
 
   // Clover mutates the manifest object it's given, and this one is the same
   // object the canvas reorder/remove handlers read from and write back to S3.
@@ -157,20 +146,6 @@ function WorkDetailPanel({
           <SegmentedControl.Item value="layout">Layout</SegmentedControl.Item>
           <SegmentedControl.Item value="linking">Linking</SegmentedControl.Item>
         </SegmentedControl.Root>
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger disabled={!manifestDetail}>
-            {/* Content caps at size 2, but the trigger matches the segmented control. */}
-            <Button size="3">
-              Share
-              <DropdownMenu.TriggerIcon />
-            </Button>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Content size="2">
-            <DropdownMenu.Item onSelect={handleShareManifest}>
-              {sharedNotice || "IIIF Manifest"}
-            </DropdownMenu.Item>
-          </DropdownMenu.Content>
-        </DropdownMenu.Root>
       </Flex>
       <Card size="3" className="panel manifest-panel">
         <Box className="panel-body manifest-panel-body">

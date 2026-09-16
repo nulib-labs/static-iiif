@@ -262,8 +262,13 @@ Resources:
         DefaultTTL: 0
         MaxTTL: 0
         ParametersInCacheKeyAndForwardedToOrigin:
-          EnableAcceptEncodingGzip: true
-          EnableAcceptEncodingBrotli: true
+          # Must both be false: CloudFront rejects the whole policy otherwise
+          # ("invalid for policy with caching disabled"). They describe how
+          # Accept-Encoding enters the CACHE KEY, and a policy with every TTL at
+          # zero has no cache to key into. Responses are still compressed — that
+          # is `Compress` on the behaviour, which is a separate setting.
+          EnableAcceptEncodingGzip: false
+          EnableAcceptEncodingBrotli: false
           CookiesConfig:
             CookieBehavior: none
           HeadersConfig:

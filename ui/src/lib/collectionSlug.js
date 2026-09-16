@@ -40,11 +40,3 @@ export function collectionSlugError(slug) {
   return null;
 }
 
-// The collection document's URL, built from the root's — which the collections
-// list already returns, so this needs no extra configuration. Shown before the
-// id is confirmed, because the id is permanent and public and that should be
-// visible at the moment it is chosen rather than discovered afterwards.
-export function previewCollectionUrl(rootId, slug) {
-  if (!rootId || !slug) return null;
-  return rootId.replace(/\/index\/collection\.json$/, `/${slug}/collection.json`);
-}

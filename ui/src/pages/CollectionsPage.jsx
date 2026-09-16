@@ -17,11 +17,7 @@ import {
 } from "@radix-ui/themes";
 import {PlusIcon, TrashIcon} from "@radix-ui/react-icons";
 import {COLLECTION_API_BASE, apiFetch} from "../lib/api";
-import {
-  suggestCollectionSlug,
-  collectionSlugError,
-  previewCollectionUrl,
-} from "../lib/collectionSlug";
+import {suggestCollectionSlug, collectionSlugError} from "../lib/collectionSlug";
 import {ROLE_ADMIN, useSession} from "../lib/session";
 import PageHeading from "../components/PageHeading";
 
@@ -56,7 +52,7 @@ function hideOnError(event) {
 // it. That derivation lives here rather than on the server on purpose — a server
 // that derives one from the other makes the name into identity, which is what
 // stopped a collection ever being named in a non-Latin script.
-function AddCollectionDialog({open, onOpenChange, onCreate, rootId}) {
+function AddCollectionDialog({open, onOpenChange, onCreate}) {
   const [label, setLabel] = useState("");
   const [slug, setSlug] = useState("");
   const [slugEdited, setSlugEdited] = useState(false);
@@ -76,7 +72,6 @@ function AddCollectionDialog({open, onOpenChange, onCreate, rootId}) {
   };
 
   const slugProblem = slug || slugEdited ? collectionSlugError(slug) : null;
-  const previewUrl = previewCollectionUrl(rootId, slug);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -145,11 +140,9 @@ function AddCollectionDialog({open, onOpenChange, onCreate, rootId}) {
                 {slugProblem ||
                   "Lowercase letters, numbers and dashes. Permanent — it is part of every URL this collection publishes, and no route can change it later."}
               </Text>
-              {previewUrl && !slugProblem && (
-                <Text as="div" size="1" color="gray" mt="1">
-                  <code>{previewUrl}</code>
-                </Text>
-              )}
+              {/* No URL preview here. The only URL this collection has before
+                  it is published is the WORKING one, and showing it invites
+                  someone to paste a draft URL into a Canopy config. */}
             </label>
             {error && (
               <Callout.Root color="red" size="1">
@@ -393,12 +386,7 @@ export default function CollectionsPage() {
           )}
         </Box>
       </Card>
-      <AddCollectionDialog
-        open={adding}
-        onOpenChange={setAdding}
-        onCreate={handleCreate}
-        rootId={root?.id || null}
-      />
+      <AddCollectionDialog open={adding} onOpenChange={setAdding} onCreate={handleCreate} />
     </Flex>
   );
 }
