@@ -23,7 +23,46 @@ image/{workId}/{n}.tif                                     ← never duplicated 
 
 Because each space describes its own URLs, **publishing is a URL-rewriting transform, not a copy** (`app/shared/publish.js`). Both the draft and the published twin are retrievable at their own `id`. The cost is that S3 ETags are useless for "has this changed?", which is why content hashes are computed and recorded explicitly.
 
-`IIIFBucketPolicy` grants anonymous `s3:GetObject` on `working/*` and `published/*` only. **Drafts stay world-readable on purpose** — Clover fetches manifests anonymously, and "published" means "in the consuming site's feed", not "visible". `internal/*` is excluded, and `image/*` need not be public because serverless-iiif reads the TIFFs through its own role.
+`IIIFBucketPolicy` grants `s3:GetObject` on `working/*` and `published/*` only, to the **CloudFront service principal** rather than to `*`, conditioned on the distribution's `AWS:SourceArn`. The bucket itself blocks all public access. **Drafts stay anonymously readable on purpose** — Clover fetches manifests unauthenticated, and "published" means "in the consuming site's feed", not "visible" — but they are readable *through `IIIFDistribution`*, not directly from S3, so the cache and the CORS response headers cannot be bypassed. `internal/*` is excluded, and `image/*` need not be readable at all because serverless-iiif reads the TIFFs through its own role.
+
+## CDN
+
+Two CloudFront distributions, both created in every stack including dev. Only
+the aliases, the certificate and the Route53 records are conditional
+(`BaseDomainName`/`CertificateArn`/`HostedZoneId`), so a dev stack exercises the
+same origins, cache behaviours and CORS headers as staging — it just reaches
+them at a generated `*.cloudfront.net` name. Both are stack outputs
+(`IIIFEndpoint`, `ImagesEndpoint`), because those names are opaque and there is
+otherwise no way to find them.
+
+`ImagesDistribution` fronts serverless-iiif, which since v5+ ships no
+distribution of its own. The cache key is the **path only** — the IIIF Image API
+encodes the whole request there, so anything else would just fragment the cache
+— and Accept-Encoding is deliberately excluded because tiles are already
+compressed.
+
+> **`ForceHost` is why a dev stack's images bypass the CDN.** Without it,
+> `info.json` advertises the Lambda Function URL as its `@id` and OpenSeadragon
+> derives every tile URL from that, walking straight past the distribution. It
+> cannot be `!GetAtt ImagesDistribution.DomainName`: that distribution takes the
+> SAR app's `FunctionDomain` as its origin, so pointing back at it is a
+> CloudFormation cycle. Using the custom hostname — a parameter, not an
+> attribute — breaks the cycle, which means a stack with no custom domain has
+> nothing to derive from. The `ImageApiForceHost` parameter exists for exactly
+> that case: deploy once, copy the `ImagesDistributionHost` output (a bare host,
+> no scheme and no path), set the parameter, deploy again. Setting
+> `BaseDomainName` to a `cloudfront.net` name is NOT the workaround — it also
+> needs a certificate, and it would rewrite `IIIF_BASE_URL` into a hostname that
+> does not exist.
+
+`IIIFDistribution` fronts the IIIF bucket over OAC. **Both spaces are routed
+through it; only `published/` is cached by it.** They are path segments under
+one `IIIF_BASE_URL`, not separate hosts, so there is one distribution either
+way. `working/*` gets a zero-TTL behaviour — every save is followed almost
+immediately by a read that has to see it, the same read-your-write constraint
+behind `?refresh=wait_for` on the index, so any TTL there reads as "the save did
+nothing". Working documents are fetched by the browser (Clover previews, the raw
+manifest link), not by the admin UI's data layer, which goes through the API.
 
 The key and id builders take a `space` that defaults to `working` (`app/shared/space.js`), so every caller but the publish pipeline is correct without passing one. An unknown space throws rather than building a key nobody serves.
 
@@ -156,6 +195,7 @@ The pipeline is an **inline Map**, not a Distributed Map: `Plan` writes the work
 Load-bearing, not incidental:
 
 - **`WriteCollection` is built from what the batches actually did, never from the plan.** A work whose write failed is simply absent, so a published collection can never advertise a manifest that 404s. Leaf before root, mirroring `applyReconciliation`.
+- **`Invalidate` cannot fail the run.** `published/*` is cached hard at the edge, so the run drops it — ONE wildcard path, `/published/*`, because a wildcard counts as a single invalidation path however many objects it matches and the free allowance is 1,000 paths a month *across the whole account*. Naming each object instead would spend a large collection's share of that on one run, and it cannot be narrowed to the collection anyway: manifests are keyed by work id, not by collection. The task catches its own errors, records the outcome under `cdn` on the status object, and returns normally; the state machine's `Catch` routes to `Finalize`, never `RecordFailure`. By that point every published byte is written and correct, and a stale edge cache is hygiene rather than correctness — reporting the collection as failed would be false in the direction that matters. `runId` is the `CallerReference`, so a retry reuses the existing invalidation instead of paying for a second path.
 - **Each published member carries `staticiiif:contentHash`** — the hash of the working bytes it was made from. That is the record of what is live, and it is why a work edited mid-run correctly shows as changed again afterwards. **The run therefore needs no lock**, and edits are not blocked while it runs.
 - A diff journal written on every save was considered and rejected: a journal drifts the moment a write half-fails or a run dies, and nothing repairs it. Comparing durable artifacts cannot drift.
 - The candidate index is created with a must-fail-if-exists PUT, so two runs starting in the same instant cannot both believe they own it.
@@ -316,7 +356,7 @@ aws cognito-idp admin-set-user-password \
 ### UI (`ui/`)
 | Variable | Description |
 |---|---|
-| `VITE_IIIF_BASE_URL` | e.g. `https://abc.cloudfront.net/iiif/2` — serverless-iiif endpoint; pre-populates the URL input. Copy from the `IiifServer` nested stack's endpoint output after `sam deploy`. |
+| `VITE_IIIF_BASE_URL` | The **Image API** base, despite the name — e.g. `https://d111111abcdef8.cloudfront.net/iiif/2`. Copy from the `ImagesEndpoint` stack output, not `IiifEndpoint`: the latter is the Lambda Function URL behind the distribution. |
 | `VITE_MANIFEST_API_URL` | The `ManifestHttpApi` endpoint from stack outputs. |
 | `VITE_COLLECTION_API_URL` | The `ManifestHttpApi` endpoint's `/collections` path. Needed as its own variable because `VITE_MANIFEST_API_URL` already ends in `/manifests`; the UI derives a fallback from it, but set this explicitly. **Every `VITE_*` must also be added to the `define` block in `ui/vite.config.js`** — Amplify injects them as process env vars, which Vite's own `.env` handling never sees, so a missing entry is `undefined` in production and fine in dev. |
 | `VITE_STORAGE_BUCKET` / `VITE_STORAGE_REGION` | The IIIF output S3 bucket and its region. `STORAGE_BUCKET` also configures Amplify's default `Storage.S3` bucket (used for Auth/Storage bootstrap). |
@@ -500,11 +540,19 @@ replacing with real storage. For the same reason every derived value must be
 recomputable — "first member" for a borrowed thumbnail means *first after
 sorting by label then id*, not first added.
 
-Ids are slugs of the label ("Environmental Impact Statements" →
-`environmental-impact-statements`). **The slug is the identity**: two labels that
-reduce to the same slug are the same collection, which is what lets the
-autocomplete forgive case and punctuation. A consequence is that renaming a
-collection is impossible by construction. `index` is reserved and rejected.
+**Label and id are two independent fields.** The label is a display string in
+any script and is free to change; the id is ASCII, chosen once at creation, and
+changeable by no route. The UI prefills the id from the label
+(`ui/src/lib/collectionSlug.js`) and the API validates what it is given —
+`sanitizeCollectionSlug` — but the server never derives one from the other.
+
+That derivation used to exist, and it is worth knowing why it went: it made a
+mutable display string into a permanent identifier, so renaming was impossible
+by construction, and it meant a collection could not be named in a non-Latin
+script at all — "日本語資料" reduced to the empty string and threw. `index` is
+still reserved as an id. Because a valid id cannot begin with `_`, it is also
+structurally unable to collide with the reserved `_`-prefixed index segments in
+`search.js`.
 
 Our `partOf` entries are marked with
 `"https://nulib-labs.github.io/static-iiif/ns#managed": true` — an **absolute
@@ -603,10 +651,11 @@ decision themselves.
 
 It bounds what the **dashboard enumerates**. It does not make anything secret.
 
-The IIIF bucket is world-readable on purpose (`Principal: "*"`, `s3:GetObject`)
-— Clover fetches manifests unauthenticated, and public resolvability is the
-product. Verified anonymously: an individual manifest and any collection
-document return 200; only the bucket *listing* is 403. The root collection is
+IIIF documents are anonymously readable on purpose — Clover fetches manifests
+unauthenticated, and public resolvability is the product. They are served
+through `IIIFDistribution`; the bucket blocks public access and grants reads
+only to CloudFront. An individual manifest and any collection document return
+200 to anyone; the bucket itself is not reachable. The root collection is
 therefore a public index of every collection and its members, walkable by anyone
 with the URL.
 

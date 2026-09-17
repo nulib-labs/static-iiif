@@ -320,7 +320,7 @@ exports.handler = async (event) => {
         const manifest = await fileNewWork({
           identifier,
           manifest: template,
-          label: body.collection,
+          slug: body.collection,
           writeManifest,
         });
         return jsonResponse(201, { manifest: manifestDetail(identifier, manifest) });
@@ -386,7 +386,7 @@ exports.handler = async (event) => {
       const filedManifest = await fileNewWork({
         identifier,
         manifest: importedManifest,
-        label: body.collection,
+        slug: body.collection,
         writeManifest,
       });
       try {

@@ -32,8 +32,8 @@ export default function LinkingPanel({collection, onMove}) {
         open={moving}
         currentSlug={collection?.slug || null}
         onCancel={() => setMoving(false)}
-        onMove={async (label) => {
-          await onMove(label);
+        onMove={async (slug) => {
+          await onMove(slug);
           setMoving(false);
         }}
       />

@@ -28,6 +28,31 @@ Parameters:
     Type: String
     Default: ""
     Description: "Prefix for this stack's OpenSearch index and alias names. Must be lowercase. Defaults to the stack name. Index names are built as <prefix>._working and <prefix>.<slug>._pub.<runId>, with <prefix>.<slug> as the alias a consuming site points at."
+  # --- CDN and custom domains -------------------------------------------------
+  # A dev stack sets none of these: both distributions are still created, and the
+  # base URLs point at their generated *.cloudfront.net domains (see Outputs). Only
+  # the aliases, the certificate and the DNS records are conditional — so a dev
+  # stack exercises the same origins, cache behaviours and CORS headers as staging.
+  ProjectName:
+    Type: String
+    Default: understory
+    Description: "PLACEHOLDER — the project name is not settled. Used only to build hostnames (iiif-<project>.<base>, images-<project>.<base>). Must be lowercase; settle it before the first staging deploy, because it ends up inside published document URLs."
+  BaseDomainName:
+    Type: String
+    Default: ""
+    Description: "e.g. library.northwestern.edu, or rdc-staging.library.northwestern.edu. Leave blank for a dev stack."
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: "ACM certificate ARN in us-east-1 covering *.<BaseDomainName>. Required whenever BaseDomainName is set; ignored otherwise."
+  HostedZoneId:
+    Type: String
+    Default: ""
+    Description: "Route53 hosted zone for BaseDomainName. Optional: leave blank to set the domains up but manage the DNS records elsewhere."
+  ImageApiForceHost:
+    Type: String
+    Default: ""
+    Description: "Bare hostname info.json should advertise, overriding the derived one. Only needed on a stack with NO custom domain: deploy once, copy the ImagesDistributionHost output (a bare host - no https://, no /iiif/2), set this, deploy again. Without it a dev stack serves tiles straight from the Lambda and the CDN never sees them."
 
 Globals:
   Function:
@@ -40,11 +65,29 @@ Globals:
       Variables:
         SOURCE_BUCKET: !Sub "${AWS::StackName}-source"
         IIIF_BUCKET: !Sub "${AWS::StackName}-iiif"
-        IIIF_BASE_URL: !Sub "https://${AWS::StackName}-iiif.s3.${AWS::Region}.amazonaws.com"
-        IMAGE_API_BASE_URL: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
+        # Both spaces live under one base URL as path segments, so there is one
+        # hostname and one distribution for working/ and published/ alike. See
+        # IIIFDistribution: published/ is cached, working/ is routed through
+        # uncached, and after OAC there is no direct S3 route to either.
+        IIIF_BASE_URL: !If
+          - HasCustomDomain
+          - !Sub "https://iiif-${ProjectName}.${BaseDomainName}"
+          - !Sub "https://${IIIFDistribution.DomainName}"
+        IMAGE_API_BASE_URL: !If
+          - HasCustomDomain
+          - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/2"
+          - !Sub "https://${ImagesDistribution.DomainName}/iiif/2"
 
 Conditions:
   SearchIndexPrefixProvided: !Not [!Equals [!Ref SearchIndexPrefix, ""]]
+  HasCustomDomain: !And
+    - !Not [!Equals [!Ref BaseDomainName, ""]]
+    - !Not [!Equals [!Ref CertificateArn, ""]]
+  HasImageApiForceHost: !Not [!Equals [!Ref ImageApiForceHost, ""]]
+  # Domains can be configured without handing this stack the zone.
+  ManageDns: !And
+    - !Condition HasCustomDomain
+    - !Not [!Equals [!Ref HostedZoneId, ""]]
 
 Resources:
   SourceBucket:
@@ -82,13 +125,20 @@ Resources:
     UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub "${AWS::StackName}-iiif"
+      # Nothing reaches this bucket directly any more: every IIIF document is
+      # served through IIIFDistribution, which reads via OAC. The website
+      # endpoint went with it — it was already unused, because IIIF_BASE_URL has
+      # always pointed at the REST endpoint rather than the website one.
       PublicAccessBlockConfiguration:
-        BlockPublicAcls: false
-        BlockPublicPolicy: false
-        IgnorePublicAcls: false
-        RestrictPublicBuckets: false
-      WebsiteConfiguration:
-        IndexDocument: index.html
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      # Vestigial once CloudFront fronts the bucket: browsers no longer reach S3
+      # here, and the CORS headers a viewer sees come from IiifCorsPolicy on the
+      # distribution. Kept because it costs nothing and removing it would only
+      # matter if something were still reading S3 directly — in which case we
+      # would want to find that out from a CORS error rather than a 403.
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders:
@@ -110,12 +160,180 @@ Resources:
           # internal/*: import status and publish plans are operational, not
           # part of either space. Pyramid TIFFs under image/* are read by
           # serverless-iiif through its own role, never fetched directly.
+          #
+          # The principal is now CloudFront rather than "*": anonymous reads
+          # still work, but only through the distribution, so the cache and the
+          # CORS response headers cannot be bypassed. SourceArn is what stops
+          # any other account's distribution naming this bucket as an origin.
           - Effect: Allow
-            Principal: "*"
+            Principal:
+              Service: cloudfront.amazonaws.com
             Action: s3:GetObject
             Resource:
               - !Sub "arn:aws:s3:::${AWS::StackName}-iiif/working/*"
               - !Sub "arn:aws:s3:::${AWS::StackName}-iiif/published/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${IIIFDistribution}"
+
+  # --- CDN --------------------------------------------------------------------
+
+  IIIFOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-iiif-oac"
+        Description: "Signed reads from the IIIF bucket"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  IiifCorsPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-iiif-cors"
+        Comment: "IIIF is cross-origin by construction — a viewer on any host fetches these."
+        CorsConfig:
+          AccessControlAllowCredentials: false
+          AccessControlAllowHeaders:
+            Items: ["*"]
+          AccessControlAllowMethods:
+            Items: [GET, HEAD, OPTIONS]
+          AccessControlAllowOrigins:
+            Items: ["*"]
+          AccessControlMaxAgeSec: 3600
+          OriginOverride: true
+
+  # Cache policies are the AWS MANAGED ones, referenced by id below rather than
+  # declared here. Custom cache policies are capped at 20 per ACCOUNT — shared
+  # with every other project in it — and three per stack would put a ceiling of
+  # about five personal stacks on that. Managed policies are AWS-owned and count
+  # against nothing.
+  #
+  # All three declared policies turned out to have exact managed equivalents, so
+  # this costs no behaviour. What each one is, and why it is the right one, is
+  # recorded at the cache behaviour that uses it.
+
+  IIIFDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${AWS::StackName} IIIF documents"
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        Aliases: !If
+          - HasCustomDomain
+          - [!Sub "iiif-${ProjectName}.${BaseDomainName}"]
+          - !Ref "AWS::NoValue"
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref CertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: iiif-bucket
+            DomainName: !GetAtt IIIFBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt IIIFOriginAccessControl.Id
+            # Required alongside OriginAccessControlId, and must be empty: this
+            # is how an S3 origin says "OAC, not the legacy OAI".
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: iiif-bucket
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          Compress: true
+          # CachingOptimized: no cookies, headers or query strings in the key,
+          # Accept-Encoding normalized in. Long-lived; the publish run
+          # invalidates it. MinTTL is 1s rather than 0, which only means an
+          # origin "no-cache" is honoured a second late — irrelevant here.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: !Ref IiifCorsPolicy
+        CacheBehaviors:
+          - PathPattern: "working/*"
+            TargetOriginId: iiif-bucket
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            Compress: true
+            # CachingDisabled: every TTL 0, so this is a pass-through to S3 and
+            # every request sees current bytes. That is the point — a save is
+            # followed almost immediately by a read that has to see it, the same
+            # read-your-write constraint behind ?refresh=wait_for on the index,
+            # and any TTL here reads as "the save did nothing".
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            ResponseHeadersPolicyId: !Ref IiifCorsPolicy
+
+  ImagesDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${AWS::StackName} IIIF Image API"
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        Aliases: !If
+          - HasCustomDomain
+          - [!Sub "images-${ProjectName}.${BaseDomainName}"]
+          - !Ref "AWS::NoValue"
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref CertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: iiif-lambda
+            DomainName: !GetAtt IiifServer.Outputs.FunctionDomain
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: iiif-lambda
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          Compress: false
+          # CachingOptimizedForUncompressedObjects: same minimal key as
+          # CachingOptimized, but WITHOUT Accept-Encoding. That distinction is
+          # the whole reason this differs from the document distribution — the
+          # IIIF Image API encodes the entire request in the path
+          # (/{id}/{region}/{size}/{rotation}/{quality}.{format}), so the path
+          # alone is a complete cache key, and tiles are already-compressed JPEG
+          # or PNG. Varying on Accept-Encoding would multiply every tile entry
+          # for nothing.
+          CachePolicyId: b2884449-e4de-46a7-ac36-70bc7f1ddd6d
+          ResponseHeadersPolicyId: !Ref IiifCorsPolicy
+
+  # Z2FDTNDATAQYW2 is CloudFront's fixed hosted zone id — the same value in every
+  # region and account, not something this stack can look up.
+  IIIFDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: ManageDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "iiif-${ProjectName}.${BaseDomainName}"
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt IIIFDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+
+  ImagesDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: ManageDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "images-${ProjectName}.${BaseDomainName}"
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt ImagesDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
 
   CognitoUserPool:
     Type: AWS::Cognito::UserPool
@@ -333,6 +551,13 @@ Resources:
               Action:
                 - states:StartExecution
               Resource: !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-publish"
+            # The publish run drops the edge cache for published/ once it has
+            # written it. CloudFront ARNs carry no region segment.
+            - Effect: Allow
+              Action:
+                - cloudfront:CreateInvalidation
+                - cloudfront:GetInvalidation
+              Resource: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${IIIFDistribution}"
             # A "running" status object is only a claim. States.ALL does not
             # catch States.Runtime, so an execution can die without the
             # RecordFailure state ever writing a terminal status — and then the
@@ -513,6 +738,7 @@ Resources:
         Variables:
           OPENSEARCH_ENDPOINT: !Ref OpenSearchEndpoint
           SEARCH_INDEX_PREFIX: !If [SearchIndexPrefixProvided, !Ref SearchIndexPrefix, !Ref "AWS::StackName"]
+          CLOUDFRONT_DISTRIBUTION_ID: !Ref IIIFDistribution
       # Deliberately the same role as ManifestFunction. Both need es:ESHttp*,
       # and the domain's resource policy is not owned by this template — so a
       # second role would mean a second ARN to paste in by hand on every new
@@ -594,6 +820,27 @@ Resources:
               - ErrorEquals: ["States.ALL"]
                 ResultPath: "$.error"
                 Next: RecordFailure
+            Next: Invalidate
+          # Drop the edge cache for published/ now that every byte of it is
+          # written. Deliberately NOT a step that can fail the run: by this point
+          # the published documents are correct and durable, and a stale edge
+          # cache is hygiene rather than correctness. Catching to Finalize rather
+          # than RecordFailure is what stops a CloudFront hiccup reporting a
+          # collection as failed when it published perfectly.
+          #
+          # ResultPath is null so $.result — which Finalize reads — survives.
+          Invalidate:
+            Type: Task
+            Resource: !GetAtt PublishFunction.Arn
+            Parameters:
+              task: invalidate
+              "slug.$": "$.slug"
+              "runId.$": "$.runId"
+            ResultPath: null
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.invalidateError"
+                Next: Finalize
             Next: Finalize
           Finalize:
             Type: Task
@@ -677,8 +924,14 @@ Resources:
             paths:
               - ui/node_modules/**/*
       EnvironmentVariables:
+        # The Image API base, despite the name. Must be the distribution, not
+        # the Function URL behind it, or the admin UI fetches every tile past
+        # the cache.
         - Name: VITE_IIIF_BASE_URL
-          Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
+          Value: !If
+            - HasCustomDomain
+            - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/2"
+            - !Sub "https://${ImagesDistribution.DomainName}/iiif/2"
         - Name: VITE_MANIFEST_API_URL
           Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/manifests"
         - Name: VITE_COLLECTION_API_URL
@@ -711,6 +964,26 @@ Resources:
         SemanticVersion: !Ref ServerlessIiifVersion
       Parameters:
         SourceBucket: !Ref IIIFBucket
+        # info.json advertises its own @id, and OpenSeadragon derives every tile
+        # URL from it. Without ForceHost that @id is the Lambda Function URL, so
+        # viewers walk straight past ImagesDistribution and the cache never sees
+        # a tile.
+        #
+        # This deliberately cannot be !GetAtt ImagesDistribution.DomainName:
+        # that distribution takes this app's FunctionDomain as its origin, so
+        # pointing back at it is a CloudFormation cycle. Using the custom
+        # hostname — a parameter, not an attribute — is what breaks it.
+        #
+        # The cost is that a stack with no custom domain has nothing to derive
+        # from, so ImageApiForceHost exists to be handed the distribution host
+        # explicitly on a second deploy. Still a parameter, so still no cycle.
+        ForceHost: !If
+          - HasImageApiForceHost
+          - !Ref ImageApiForceHost
+          - !If
+            - HasCustomDomain
+            - !Sub "images-${ProjectName}.${BaseDomainName}"
+            - !Ref "AWS::NoValue"
 
 Outputs:
   SourceBucketName:
@@ -720,7 +993,28 @@ Outputs:
   IIIFImageFunctionArn:
     Value: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-iiif-image"
   IiifEndpoint:
+    Description: "The Image API's origin, behind ImagesEndpoint. Useful for debugging; not what anything should be pointed at."
     Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
+  # A dev stack's CloudFront hostnames are generated and opaque (d111111abcdef8
+  # shape), so without these there is no way to find them short of the console.
+  IIIFEndpoint:
+    Description: "Base URL for IIIF documents — the value baked into every manifest id. This is IIIF_BASE_URL."
+    Value: !If
+      - HasCustomDomain
+      - !Sub "https://iiif-${ProjectName}.${BaseDomainName}"
+      - !Sub "https://${IIIFDistribution.DomainName}"
+  ImagesEndpoint:
+    Description: "Base URL for the IIIF Image API. On a dev stack, info.json will still advertise IiifEndpoint — see ForceHost on IiifServer."
+    Value: !If
+      - HasCustomDomain
+      - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/2"
+      - !Sub "https://${ImagesDistribution.DomainName}/iiif/2"
+  ImagesDistributionHost:
+    Description: "Bare hostname of the images distribution - paste into the ImageApiForceHost parameter on a stack with no custom domain."
+    Value: !GetAtt ImagesDistribution.DomainName
+  IIIFDistributionId:
+    Description: "Invalidated by the publish run."
+    Value: !Ref IIIFDistribution
   UIEndpoint:
     Value: !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
   ManifestApiUrl:

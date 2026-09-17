@@ -15,6 +15,11 @@
 
 const crypto = require("node:crypto");
 const {
+  CloudFrontClient,
+  CreateInvalidationCommand,
+  GetInvalidationCommand,
+} = require("@aws-sdk/client-cloudfront");
+const {
   manifestObjectKey,
   extractLabel,
   canvasThumbnailService,
@@ -328,7 +333,88 @@ async function recordFailure({slug, runId, indexName, error}) {
   return {slug, runId, failed: true};
 }
 
-const TASKS = {plan, batch, writeCollection, finalize, recordFailure};
+// --- invalidate ------------------------------------------------------------
+
+// published/ is cached hard at the edge (PublishedCachePolicy in template.yml),
+// so until that cache is dropped a consuming site keeps serving the previous
+// run's bytes no matter what this run wrote.
+//
+// ONE wildcard path, deliberately. A wildcard counts as a single invalidation
+// path however many objects it matches, and the free allowance — 1,000 paths a
+// month — is shared across every distribution in the whole ACCOUNT, not just
+// this stack. Naming each published object instead would spend a 271-work
+// collection's share of that allowance on a single run.
+//
+// It cannot be narrowed to the collection either: manifests are keyed by work
+// id rather than by collection (published/presentation/manifest/{workId}/), so
+// a collection-scoped run touches an arbitrary subset of that prefix.
+// Over-invalidating only costs some re-fetches from an S3 origin.
+const INVALIDATION_PATH = "/published/*";
+const POLL_INTERVAL_MS = 5000;
+const POLL_ATTEMPTS = 24;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// writeStatus replaces the object wholesale, and this task runs between two
+// states that own most of its fields — so read, merge, write.
+async function patchStatus(slug, patch) {
+  const current = (await readJson(statusKeyFor(slug))) || {};
+  await writeStatus(slug, {...current, ...patch});
+}
+
+// Nothing in here is allowed to fail the run. By the time this task is reached
+// every published byte is written and durable; a stale edge cache is hygiene,
+// not correctness. So the outcome is recorded on the status object — where the
+// UI already polls — and the task returns normally either way. The state
+// machine's Catch stays as a backstop for the things this cannot catch, like a
+// Lambda timeout.
+async function invalidate({slug, runId}) {
+  const distributionId = process.env.CLOUDFRONT_DISTRIBUTION_ID;
+  if (!distributionId) {
+    return {invalidated: false, reason: "no distribution configured"};
+  }
+
+  try {
+    await patchStatus(slug, {phase: "Clearing the CDN cache…"});
+    const client = new CloudFrontClient({});
+
+    // runId as the caller reference makes this idempotent: on a retry
+    // CloudFront returns the invalidation it already has rather than starting a
+    // second one and charging for a second path.
+    const created = await client.send(
+      new CreateInvalidationCommand({
+        DistributionId: distributionId,
+        InvalidationBatch: {
+          CallerReference: runId,
+          Paths: {Quantity: 1, Items: [INVALIDATION_PATH]},
+        },
+      }),
+    );
+
+    const invalidationId = created.Invalidation?.Id || null;
+    let status = created.Invalidation?.Status || "InProgress";
+
+    for (let attempt = 0; attempt < POLL_ATTEMPTS && status !== "Completed"; attempt += 1) {
+      await sleep(POLL_INTERVAL_MS);
+      const current = await client.send(
+        new GetInvalidationCommand({DistributionId: distributionId, Id: invalidationId}),
+      );
+      status = current.Invalidation?.Status || status;
+    }
+
+    // Not an error: an invalidation that is still running will finish on its
+    // own. The id is recorded so it can be chased if anyone needs to.
+    const completed = status === "Completed";
+    await patchStatus(slug, {cdn: {invalidationId, status, completed}});
+    return {invalidated: true, invalidationId, status};
+  } catch (error) {
+    console.error("CDN invalidation failed", error);
+    await patchStatus(slug, {cdn: {invalidated: false, error: error.message}}).catch(() => {});
+    return {invalidated: false, error: error.message};
+  }
+}
+
+const TASKS = {plan, batch, writeCollection, invalidate, finalize, recordFailure};
 
 exports.handler = async (event) => {
   const task = TASKS[event?.task];

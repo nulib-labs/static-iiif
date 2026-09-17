@@ -11,7 +11,7 @@ const {
   MANAGED_KEY,
   ITEM_COUNT_KEY,
   collectionSlugPattern,
-  slugifyCollectionLabel,
+  sanitizeCollectionLabel,
   sanitizeCollectionSlug,
   collectionObjectKey,
   rootCollectionKey,
@@ -35,60 +35,24 @@ const nulManifest = JSON.parse(
   fs.readFileSync(path.join(__dirname, "..", "__fixtures__", "nul-manifest.json"), "utf8"),
 );
 
-test("slugifyCollectionLabel: normal labels", () => {
-  const cases = {
-    "Environmental Impact Statements": "environmental-impact-statements",
-    "ENVIRONMENTAL impact Statements": "environmental-impact-statements",
-    "Maps, Plans & Surveys": "maps-plans-surveys",
-    "  --Maps--  ": "maps",
-    "Campus\tMaps\n": "campus-maps",
-    "1974 Reports": "1974-reports",
-    "Café Society": "cafe-society",
-    "Ångström": "angstrom",
-    ﬁles: "files",
-    "already-a-slug": "already-a-slug",
-  };
-  for (const [input, expected] of Object.entries(cases)) {
-    assert.equal(slugifyCollectionLabel(input), expected, input);
+test("sanitizeCollectionLabel keeps the label intact, in any script", () => {
+  // The whole point of separating label from slug. Every one of these threw
+  // under the old derive-a-slug-from-the-label rule, because reducing them to
+  // [a-z0-9-] left nothing behind.
+  for (const label of ["日本語資料", "Архив", "مخطوطات", "Ελληνικά", "Café Society", "🙂"]) {
+    assert.equal(sanitizeCollectionLabel(label), label, label);
   }
+  assert.equal(sanitizeCollectionLabel("  Campus Maps  "), "Campus Maps");
 });
 
-test("slugifyCollectionLabel: idempotent, and output always matches the pattern", () => {
-  const corpus = [
-    "Environmental Impact Statements",
-    "Maps, Plans & Surveys",
-    "Café Society",
-    "1974 Reports",
-    "a".repeat(150),
-  ];
-  for (const input of corpus) {
-    const once = slugifyCollectionLabel(input);
-    assert.equal(slugifyCollectionLabel(once), once, `idempotent: ${input}`);
-    assert.match(once, collectionSlugPattern);
-    // The charset makes path traversal structurally impossible.
-    assert.ok(!once.includes(".") && !once.includes("/"));
+test("sanitizeCollectionLabel rejects only empty and over-long", () => {
+  for (const bad of ["", "   ", null, undefined]) {
+    assert.throws(() => sanitizeCollectionLabel(bad), /required/, String(bad));
   }
-});
-
-test("slugifyCollectionLabel: truncates at a word boundary with no trailing dash", () => {
-  // Under the 200-char label cap, but well over the 96-char slug cap.
-  const label = `${"word ".repeat(30)}tail`;
-  assert.ok(label.length < 200);
-  const slug = slugifyCollectionLabel(label);
-  assert.ok(slug.length <= 96, `length ${slug.length}`);
-  assert.ok(!slug.endsWith("-"));
-  assert.match(slug, collectionSlugPattern);
-  assert.equal(slugifyCollectionLabel(slug), slug);
-});
-
-test("slugifyCollectionLabel: rejects unusable and reserved names", () => {
-  for (const bad of ["", "   ", null, undefined, "!!!", "🙂", "···", "—"]) {
-    assert.throws(() => slugifyCollectionLabel(bad), /required|doesn't contain/, String(bad));
-  }
-  for (const reserved of ["Index", "index", "  INDEX  "]) {
-    assert.throws(() => slugifyCollectionLabel(reserved), /reserved/, reserved);
-  }
-  assert.throws(() => slugifyCollectionLabel("x".repeat(201)), /limited to 200/);
+  assert.throws(() => sanitizeCollectionLabel("x".repeat(201)), /limited to 200/);
+  // "index" is reserved as a SLUG, not as a label: nothing stops a collection
+  // being called "Index" so long as its id is something else.
+  assert.equal(sanitizeCollectionLabel("Index"), "Index");
 });
 
 test("sanitizeCollectionSlug validates without transforming", () => {
