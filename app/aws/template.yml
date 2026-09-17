@@ -49,6 +49,10 @@ Parameters:
     Type: String
     Default: ""
     Description: "Route53 hosted zone for BaseDomainName. Optional: leave blank to set the domains up but manage the DNS records elsewhere."
+  ImageApiForceHost:
+    Type: String
+    Default: ""
+    Description: "Bare hostname info.json should advertise, overriding the derived one. Only needed on a stack with NO custom domain: deploy once, copy the ImagesDistributionHost output (a bare host - no https://, no /iiif/2), set this, deploy again. Without it a dev stack serves tiles straight from the Lambda and the CDN never sees them."
 
 Globals:
   Function:
@@ -79,6 +83,7 @@ Conditions:
   HasCustomDomain: !And
     - !Not [!Equals [!Ref BaseDomainName, ""]]
     - !Not [!Equals [!Ref CertificateArn, ""]]
+  HasImageApiForceHost: !Not [!Equals [!Ref ImageApiForceHost, ""]]
   # Domains can be configured without handing this stack the zone.
   ManageDns: !And
     - !Condition HasCustomDomain
@@ -919,8 +924,14 @@ Resources:
             paths:
               - ui/node_modules/**/*
       EnvironmentVariables:
+        # The Image API base, despite the name. Must be the distribution, not
+        # the Function URL behind it, or the admin UI fetches every tile past
+        # the cache.
         - Name: VITE_IIIF_BASE_URL
-          Value: !Sub "https://${IiifServer.Outputs.FunctionDomain}/iiif/2"
+          Value: !If
+            - HasCustomDomain
+            - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/2"
+            - !Sub "https://${ImagesDistribution.DomainName}/iiif/2"
         - Name: VITE_MANIFEST_API_URL
           Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com/manifests"
         - Name: VITE_COLLECTION_API_URL
@@ -963,15 +974,16 @@ Resources:
         # pointing back at it is a CloudFormation cycle. Using the custom
         # hostname — a parameter, not an attribute — is what breaks it.
         #
-        # The cost is that a dev stack (no custom domain) has no value to pass,
-        # so its info.json points at the Function URL and images bypass the CDN.
-        # That is a known, bounded dev-only gap. To close it locally: deploy
-        # once, read ImagesEndpoint from the outputs, and redeploy with
-        # BaseDomainName/ProjectName set to match it.
+        # The cost is that a stack with no custom domain has nothing to derive
+        # from, so ImageApiForceHost exists to be handed the distribution host
+        # explicitly on a second deploy. Still a parameter, so still no cycle.
         ForceHost: !If
-          - HasCustomDomain
-          - !Sub "images-${ProjectName}.${BaseDomainName}"
-          - !Ref "AWS::NoValue"
+          - HasImageApiForceHost
+          - !Ref ImageApiForceHost
+          - !If
+            - HasCustomDomain
+            - !Sub "images-${ProjectName}.${BaseDomainName}"
+            - !Ref "AWS::NoValue"
 
 Outputs:
   SourceBucketName:
@@ -997,6 +1009,9 @@ Outputs:
       - HasCustomDomain
       - !Sub "https://images-${ProjectName}.${BaseDomainName}/iiif/2"
       - !Sub "https://${ImagesDistribution.DomainName}/iiif/2"
+  ImagesDistributionHost:
+    Description: "Bare hostname of the images distribution - paste into the ImageApiForceHost parameter on a stack with no custom domain."
+    Value: !GetAtt ImagesDistribution.DomainName
   IIIFDistributionId:
     Description: "Invalidated by the publish run."
     Value: !Ref IIIFDistribution

@@ -47,9 +47,13 @@ compressed.
 > cannot be `!GetAtt ImagesDistribution.DomainName`: that distribution takes the
 > SAR app's `FunctionDomain` as its origin, so pointing back at it is a
 > CloudFormation cycle. Using the custom hostname — a parameter, not an
-> attribute — breaks the cycle, which means a stack with no custom domain has no
-> value to pass. Known and bounded; to close it locally, deploy once and
-> redeploy with the hostname set.
+> attribute — breaks the cycle, which means a stack with no custom domain has
+> nothing to derive from. The `ImageApiForceHost` parameter exists for exactly
+> that case: deploy once, copy the `ImagesDistributionHost` output (a bare host,
+> no scheme and no path), set the parameter, deploy again. Setting
+> `BaseDomainName` to a `cloudfront.net` name is NOT the workaround — it also
+> needs a certificate, and it would rewrite `IIIF_BASE_URL` into a hostname that
+> does not exist.
 
 `IIIFDistribution` fronts the IIIF bucket over OAC. **Both spaces are routed
 through it; only `published/` is cached by it.** They are path segments under
