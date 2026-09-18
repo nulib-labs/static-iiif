@@ -64,6 +64,50 @@ behind `?refresh=wait_for` on the index, so any TTL there reads as "the save did
 nothing". Working documents are fetched by the browser (Clover previews, the raw
 manifest link), not by the admin UI's data layer, which goes through the API.
 
+### Hostnames
+
+Three names, all derived from `ProjectName` under `BaseDomainName` and all
+covered by the one `*.<base>` certificate:
+
+| Host | Fronts | Resource |
+|---|---|---|
+| `iiif-<project>.<base>` | the IIIF bucket (documents) | `IIIFDistribution` + `IIIFDnsRecord` |
+| `images-<project>.<base>` | serverless-iiif (the Image API) | `ImagesDistribution` + `ImagesDnsRecord` |
+| `admin-<project>.<base>` | the Amplify-hosted admin UI | `AmplifyDomain` |
+
+`AmplifyDomain` is the odd one out in two ways. It has **no Route53 RecordSet**:
+Amplify owns the CNAME for a domain attached to it and writes that record itself
+when the hosted zone is in the same account, and no CloudFormation attribute
+exposes the target it points at, so a hand-written record would be a guess
+Amplify then fights over. `HostedZoneId` is therefore not consulted for it — with
+the zone managed elsewhere, take the record from Hosting > Custom domains in the
+console. And it maps the branch to the **root** of `admin-<project>.<base>`
+(`Prefix: ""`) rather than treating `admin-<project>` as a prefix under the base,
+following the same shape as `nulib/manifest-edit-backend`.
+
+It sets `CertificateType: CUSTOM` against the existing `CertificateArn` instead
+of letting Amplify provision its own. An `AMPLIFY_MANAGED` certificate would sit
+in `PENDING_VERIFICATION` waiting on a validation record — a DNS round trip this
+stack already paid for when the wildcard was issued. That also rules out
+auto-subdomain: a per-branch name would be `<branch>.admin-<project>.<base>`, two
+labels below the base, which `*.<base>` does not cover.
+
+> **The first staging deploy is where this gets tested.** CloudFormation waits
+> for the domain association to go `AVAILABLE`, and a domain whose CNAME never
+> appears sits in `AWAITING_APP_CNAME` until the stack times out. In practice
+> setting `HostedZoneId` at all means the zone is in this account — a
+> `Route53::RecordSet` could not be created in it otherwise — so Amplify will
+> write the record itself and this never comes up. If the zone is ever moved out
+> of the deploy account, the record Amplify wants shows up in the console as soon
+> as the association is created, long before CloudFormation gives up: add it
+> there while the deploy waits.
+
+The generated `<branch>.<appid>.amplifyapp.com` name keeps working alongside the
+custom one and is its own output (`AmplifyDefaultDomain`), because attaching a
+domain takes several minutes and the DNS half may not be this stack's to do.
+`UIEndpoint` is the custom hostname once one is configured, the generated one
+otherwise.
+
 The key and id builders take a `space` that defaults to `working` (`app/shared/space.js`), so every caller but the publish pipeline is correct without passing one. An unknown space throws rather than building a key nobody serves.
 
 ### One collection per work
@@ -364,7 +408,7 @@ aws cognito-idp admin-set-user-password \
 | `VITE_STORAGE_IDENTITY_POOL_ID` / `VITE_COGNITO_USER_POOL_ID` / `VITE_COGNITO_CLIENT_ID` | Cognito identifiers from stack outputs, for the Amplify `Authenticator`. |
 
 ### Amplify deployment
-Connect the repo in Amplify (this is Amplify **Hosting** only — auth/storage/API are all defined via SAM, not the Amplify backend framework). The inline `BuildSpec` in `template.yml`'s `AmplifyApp` resource handles the build (`ui/` subdirectory, outputs `ui/dist`) and injects the `VITE_*` environment variables from the stack's own resources automatically.
+Connect the repo in Amplify (this is Amplify **Hosting** only — auth/storage/API are all defined via SAM, not the Amplify backend framework). The inline `BuildSpec` in `template.yml`'s `AmplifyApp` resource handles the build (`ui/` subdirectory, outputs `ui/dist`) and injects the `VITE_*` environment variables from the stack's own resources automatically. On a stack with a custom domain, `AmplifyDomain` also attaches `admin-<project>.<base>` to the deploy branch — see **Hostnames** under CDN.
 
 ## Naming
 

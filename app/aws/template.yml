@@ -36,7 +36,7 @@ Parameters:
   ProjectName:
     Type: String
     Default: understory
-    Description: "PLACEHOLDER — the project name is not settled. Used only to build hostnames (iiif-<project>.<base>, images-<project>.<base>). Must be lowercase; settle it before the first staging deploy, because it ends up inside published document URLs."
+    Description: "PLACEHOLDER — the project name is not settled. Used only to build hostnames (iiif-<project>.<base>, images-<project>.<base>, admin-<project>.<base>). Must be lowercase; settle it before the first staging deploy, because it ends up inside published document URLs."
   BaseDomainName:
     Type: String
     Default: ""
@@ -44,11 +44,11 @@ Parameters:
   CertificateArn:
     Type: String
     Default: ""
-    Description: "ACM certificate ARN in us-east-1 covering *.<BaseDomainName>. Required whenever BaseDomainName is set; ignored otherwise."
+    Description: "ACM certificate ARN in us-east-1 covering *.<BaseDomainName>. One certificate serves both distributions and the Amplify domain. Required whenever BaseDomainName is set; ignored otherwise."
   HostedZoneId:
     Type: String
     Default: ""
-    Description: "Route53 hosted zone for BaseDomainName. Optional: leave blank to set the domains up but manage the DNS records elsewhere."
+    Description: "Route53 hosted zone for BaseDomainName. Optional: leave blank to set the domains up but manage the DNS records elsewhere. Covers the two CloudFront aliases only — the admin hostname's record belongs to Amplify, which writes it itself when the zone is in this account and otherwise hands it to you in the console."
   ImageApiForceHost:
     Type: String
     Default: ""
@@ -956,6 +956,36 @@ Resources:
       BranchName: !Ref GitHubBranch
       EnableAutoBuild: true
 
+  # The admin UI's hostname, alongside iiif-<project> and images-<project>.
+  # Unlike those two there is no Route53 RecordSet here. Amplify owns the CNAME
+  # for a domain attached to it and writes that record itself whenever the
+  # hosted zone is in this account, and nothing in CloudFormation exposes the
+  # target it points at — so a record written here would be a guess that
+  # Amplify then fights over. With the zone managed elsewhere, copy the record
+  # Amplify shows under Hosting > Custom domains and add it there by hand.
+  # HostedZoneId is not consulted either way, so ManageDns does not gate this.
+  AmplifyDomain:
+    Type: AWS::Amplify::Domain
+    Condition: HasCustomDomain
+    Properties:
+      AppId: !GetAtt AmplifyApp.AppId
+      DomainName: !Sub "admin-${ProjectName}.${BaseDomainName}"
+      # CUSTOM reuses the same wildcard certificate as the two distributions
+      # instead of having Amplify provision one of its own. An AMPLIFY_MANAGED
+      # certificate would sit in PENDING_VERIFICATION waiting for a validation
+      # record, which is a DNS round trip this stack has already paid for once.
+      CertificateSettings:
+        CertificateType: CUSTOM
+        CustomCertificateArn: !Ref CertificateArn
+      # The whole hostname is in DomainName, so the branch maps to its root
+      # (Prefix: "") rather than admin- being a prefix under BaseDomainName.
+      # Auto-subdomain is deliberately off: a per-branch name would be
+      # <branch>.admin-<project>.<base>, two labels below the base, and
+      # *.<base> does not cover that.
+      SubDomainSettings:
+        - Prefix: ""
+          BranchName: !GetAtt AmplifyBranch.BranchName
+
   IiifServer:
     Type: AWS::Serverless::Application
     Properties:
@@ -1016,6 +1046,13 @@ Outputs:
     Description: "Invalidated by the publish run."
     Value: !Ref IIIFDistribution
   UIEndpoint:
+    Description: "Admin UI. The custom hostname once one is configured; the generated Amplify domain otherwise."
+    Value: !If
+      - HasCustomDomain
+      - !Sub "https://admin-${ProjectName}.${BaseDomainName}"
+      - !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
+  AmplifyDefaultDomain:
+    Description: "The branch's generated Amplify domain, which keeps working alongside the custom one. Attaching a domain takes several minutes and the DNS record may not be this stack's to write, so this stays the way in until the custom hostname resolves."
     Value: !Sub "https://${GitHubBranch}.${AmplifyApp.AppId}.amplifyapp.com"
   ManifestApiUrl:
     Value: !Sub "https://${ManifestHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
