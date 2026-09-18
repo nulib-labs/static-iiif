@@ -1,5 +1,5 @@
 import {useEffect, useState} from "react";
-import {Link as RouterLink} from "react-router-dom";
+import {Link as RouterLink, useNavigate} from "react-router-dom";
 import {
   AlertDialog,
   Badge,
@@ -7,19 +7,20 @@ import {
   Button,
   Callout,
   Card,
-  Dialog,
   Flex,
   IconButton,
   Link,
   Table,
   Text,
-  TextField,
 } from "@radix-ui/themes";
 import {PlusIcon, TrashIcon} from "@radix-ui/react-icons";
 import {COLLECTION_API_BASE, apiFetch} from "../lib/api";
 import {suggestCollectionSlug, collectionSlugError} from "../lib/collectionSlug";
 import {ROLE_ADMIN, useSession} from "../lib/session";
 import PageHeading from "../components/PageHeading";
+import AddCollectionModal from "../components/collections/AddCollectionModal";
+
+const EMPTY_FORM = {label: "", slug: "", slugEdited: false};
 
 // The root collection caches a thumbnail per collection precisely so a UI like
 // this one does not have to open every leaf. Prefer the image service (a square
@@ -43,127 +44,6 @@ function slugFromCollectionId(id) {
 
 function hideOnError(event) {
   event.currentTarget.style.visibility = "hidden";
-}
-
-// Two fields, because a collection has two independent things: a name, which is
-// a display string in any language, and an id, which is permanent and public.
-//
-// The id is PREFILLED from the name and then left alone once the curator edits
-// it. That derivation lives here rather than on the server on purpose — a server
-// that derives one from the other makes the name into identity, which is what
-// stopped a collection ever being named in a non-Latin script.
-function AddCollectionDialog({open, onOpenChange, onCreate}) {
-  const [label, setLabel] = useState("");
-  const [slug, setSlug] = useState("");
-  const [slugEdited, setSlugEdited] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(null);
-
-  const reset = () => {
-    setLabel("");
-    setSlug("");
-    setSlugEdited(false);
-    setError(null);
-  };
-
-  const onLabelChange = (next) => {
-    setLabel(next);
-    if (!slugEdited) setSlug(suggestCollectionSlug(next));
-  };
-
-  const slugProblem = slug || slugEdited ? collectionSlugError(slug) : null;
-
-  const submit = async (event) => {
-    event.preventDefault();
-    const name = label.trim();
-    if (!name) {
-      setError("A name is required");
-      return;
-    }
-    const problem = collectionSlugError(slug);
-    if (problem) {
-      setError(problem);
-      return;
-    }
-    setSubmitting(true);
-    setError(null);
-    try {
-      await onCreate({label: name, slug});
-      reset();
-      onOpenChange(false);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <Dialog.Root
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) reset();
-        onOpenChange(next);
-      }}
-    >
-      <Dialog.Content maxWidth="calc(560 * var(--px))">
-        <Dialog.Title>Add Collection</Dialog.Title>
-        <form onSubmit={submit}>
-          <Flex direction="column" gap="3">
-            <label>
-              <Text as="div" size="2" weight="medium" mb="1">
-                Name
-              </Text>
-              <TextField.Root
-                autoFocus
-                value={label}
-                onChange={(event) => onLabelChange(event.target.value)}
-                placeholder="e.g. Environmental Impact Statements"
-              />
-              <Text as="div" size="1" color="gray" mt="1">
-                Shown throughout the app. Any language.
-              </Text>
-            </label>
-            <label>
-              <Text as="div" size="2" weight="medium" mb="1">
-                Id
-              </Text>
-              <TextField.Root
-                value={slug}
-                onChange={(event) => {
-                  setSlugEdited(true);
-                  setSlug(event.target.value);
-                }}
-                placeholder="e.g. environmental-impact-statements"
-              />
-              <Text as="div" size="1" color={slugProblem ? "red" : "gray"} mt="1">
-                {slugProblem ||
-                  "Lowercase letters, numbers and dashes. Permanent — it is part of every URL this collection publishes, and no route can change it later."}
-              </Text>
-              {/* No URL preview here. The only URL this collection has before
-                  it is published is the WORKING one, and showing it invites
-                  someone to paste a draft URL into a Canopy config. */}
-            </label>
-            {error && (
-              <Callout.Root color="red" size="1">
-                <Callout.Text>{error}</Callout.Text>
-              </Callout.Root>
-            )}
-            <Flex justify="end" gap="3" mt="2">
-              <Dialog.Close>
-                <Button type="button" variant="soft" color="gray" disabled={submitting}>
-                  Cancel
-                </Button>
-              </Dialog.Close>
-              <Button type="submit" loading={submitting}>
-                Create
-              </Button>
-            </Flex>
-          </Flex>
-        </form>
-      </Dialog.Content>
-    </Dialog.Root>
-  );
 }
 
 function CollectionRow({collection, isRoot = false, canDelete = false, onDelete}) {
@@ -238,8 +118,8 @@ function CollectionRow({collection, isRoot = false, canDelete = false, onDelete}
   );
 }
 
-// Stub. Read-only for now: it proves the projection the works screen writes is
-// queryable on its own, and gives the management features somewhere to land.
+// The home page: the root collection's members. Admins can create a collection,
+// import one wholesale from a source IIIF Collection, or delete an empty one.
 export default function CollectionsPage() {
   const session = useSession();
   // Same scoping as the works list: no admin role and no grant means the API
@@ -252,6 +132,21 @@ export default function CollectionsPage() {
   const [error, setError] = useState(null);
   const [adding, setAdding] = useState(false);
   const isAdmin = session.role === ROLE_ADMIN;
+  const navigate = useNavigate();
+
+  // The Add flow branches the same way Add Work does:
+  //   choose -> create
+  //   choose -> import-url -> import-preview
+  const [step, setStep] = useState("choose");
+  const [createForm, setCreateForm] = useState(EMPTY_FORM);
+  const [createError, setCreateError] = useState(null);
+  const [createSubmitting, setCreateSubmitting] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+  const [importPreview, setImportPreview] = useState(null);
+  const [importForm, setImportForm] = useState(EMPTY_FORM);
+  const [importError, setImportError] = useState(null);
+  const [importFetching, setImportFetching] = useState(false);
+  const [importConfirming, setImportConfirming] = useState(false);
 
   useEffect(() => {
     if (!available) return undefined;
@@ -275,15 +170,127 @@ export default function CollectionsPage() {
     };
   }, [available]);
 
-  const handleCreate = async ({label, slug}) => {
-    const data = await apiFetch(COLLECTION_API_BASE, {
-      method: "POST",
-      body: {label, slug},
-      errorMessage: "Unable to create collection",
-    });
-    // The API returns the whole list back, so the table never has to refetch.
-    if (Array.isArray(data.collections)) setCollections(data.collections);
-    setError(null);
+  const openModal = () => {
+    setStep("choose");
+    setCreateForm(EMPTY_FORM);
+    setCreateError(null);
+    setImportUrl("");
+    setImportPreview(null);
+    setImportForm(EMPTY_FORM);
+    setImportError(null);
+    setAdding(true);
+  };
+
+  const handleModalBack = () => {
+    if (step === "import-preview") {
+      setImportPreview(null);
+      setImportError(null);
+      setStep("import-url");
+    } else {
+      setStep("choose");
+    }
+  };
+
+  // Both branches send the same two fields and both validate them the same way.
+  // The server validates again and never derives one from the other.
+  const validateForm = (form) => {
+    if (!form.label.trim()) return "A name is required";
+    return collectionSlugError(form.slug);
+  };
+
+  const handleCreateSubmit = async (event) => {
+    event.preventDefault();
+    const problem = validateForm(createForm);
+    if (problem) {
+      setCreateError(problem);
+      return;
+    }
+    setCreateSubmitting(true);
+    setCreateError(null);
+    try {
+      const data = await apiFetch(COLLECTION_API_BASE, {
+        method: "POST",
+        body: {label: createForm.label.trim(), slug: createForm.slug},
+        errorMessage: "Unable to create collection",
+      });
+      // The API returns the whole list back, so the table never has to refetch.
+      if (Array.isArray(data.collections)) setCollections(data.collections);
+      setError(null);
+      setAdding(false);
+    } catch (err) {
+      setCreateError(err.message);
+    } finally {
+      setCreateSubmitting(false);
+    }
+  };
+
+  // Look at the source without writing anything. The response is a SUMMARY —
+  // label, count, thumbnail — not the Collection document: a large one would
+  // exceed Lambda's response cap, so the run re-fetches it server-side.
+  const handleImportFetch = async (event) => {
+    event.preventDefault();
+    const sourceUrl = importUrl.trim();
+    if (!sourceUrl) {
+      setImportError("A collection URL is required");
+      return;
+    }
+    setImportFetching(true);
+    setImportError(null);
+    try {
+      const data = await apiFetch(`${COLLECTION_API_BASE}/import/preview`, {
+        method: "POST",
+        body: {sourceUrl},
+        errorMessage: "Unable to fetch that collection",
+      });
+      setImportPreview(data);
+      // Seeded from the source's label through the same slugifier the Create
+      // branch uses on every keystroke, and editable from here on — which is
+      // what lets the curator fix a collision or a label with no ASCII in it.
+      setImportForm({
+        label: data.label || "",
+        slug: suggestCollectionSlug(data.label || ""),
+        slugEdited: false,
+      });
+      setStep("import-preview");
+    } catch (err) {
+      setImportError(err.message);
+    } finally {
+      setImportFetching(false);
+    }
+  };
+
+  const handleImportConfirm = async (event) => {
+    event.preventDefault();
+    const problem = validateForm(importForm);
+    if (problem) {
+      setImportError(problem);
+      return;
+    }
+    setImportConfirming(true);
+    setImportError(null);
+    try {
+      const data = await apiFetch(`${COLLECTION_API_BASE}/import`, {
+        method: "POST",
+        body: {
+          sourceUrl: importPreview.sourceUrl,
+          label: importForm.label.trim(),
+          slug: importForm.slug,
+        },
+        errorMessage: "Unable to import that collection",
+      });
+      if (Array.isArray(data.collections)) setCollections(data.collections);
+      setError(null);
+      setAdding(false);
+      // Straight to the collection, where the progress banner lives and where
+      // works appear as they land — mirroring the work import, which goes to the
+      // work it just created. The collection already exists and is resolvable;
+      // it is simply empty until the run fills it.
+      navigate(`/collection/${encodeURIComponent(data.collection.slug)}`);
+    } catch (err) {
+      setImportError(err.message);
+    } finally {
+      setImportConfirming(false);
+    }
   };
 
   const handleDelete = async (collection) => {
@@ -318,7 +325,7 @@ export default function CollectionsPage() {
       <Card size="3" className="panel">
         {isAdmin && (
           <Flex justify="end" align="center" gap="3" mb="4">
-            <Button type="button" size="3" onClick={() => setAdding(true)} disabled={!available}>
+            <Button type="button" size="3" onClick={openModal} disabled={!available}>
               <PlusIcon /> Add
             </Button>
           </Flex>
@@ -386,7 +393,28 @@ export default function CollectionsPage() {
           )}
         </Box>
       </Card>
-      <AddCollectionDialog open={adding} onOpenChange={setAdding} onCreate={handleCreate} />
+      <AddCollectionModal
+        open={adding}
+        onClose={() => setAdding(false)}
+        step={step}
+        onSelectStep={setStep}
+        onBack={handleModalBack}
+        createForm={createForm}
+        onCreateChange={(patch) => setCreateForm((prev) => ({...prev, ...patch}))}
+        onCreateSubmit={handleCreateSubmit}
+        createSubmitting={createSubmitting}
+        createError={createError}
+        importUrl={importUrl}
+        onImportUrlChange={setImportUrl}
+        onImportFetch={handleImportFetch}
+        importFetching={importFetching}
+        importError={importError}
+        importPreview={importPreview}
+        importForm={importForm}
+        onImportFormChange={(patch) => setImportForm((prev) => ({...prev, ...patch}))}
+        onImportConfirm={handleImportConfirm}
+        importConfirming={importConfirming}
+      />
     </Flex>
   );
 }

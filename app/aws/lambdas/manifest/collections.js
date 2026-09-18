@@ -42,6 +42,7 @@ const {jsonResponse, parseBody, isNotFound} = require("./http");
 const {WORKING, spaceKey} = require("../../../shared/space");
 const {listWorks, syncCounts, rebuild: rebuildWorkIndex, documentFor: workDocument} = require("./workIndex");
 const {handlePublishRoute} = require("./publishRoutes");
+const {handleCollectionImportRoute} = require("./importRoutes");
 const {
   canReindex,
   canMoveWork,
@@ -400,6 +401,20 @@ async function handleCollectionsRoute({method, segments, principal, event}) {
   // The publish endpoints live under the collection they act on.
   if (segments.length >= 3 && segments[2] === "publish") {
     return handlePublishRoute({method, segments, principal, event});
+  }
+
+  // The import endpoints. Two shapes: /collections/import[/preview], which acts
+  // on no collection because it is about to create one, and
+  // /collections/{slug}/import, which reports on a run.
+  //
+  // Matched here, ahead of everything that reads segments[1] as a slug — and
+  // "import" is a reserved slug (sanitizeCollectionSlug), so the first shape can
+  // never shadow a real collection.
+  if (
+    (segments.length >= 2 && segments[1] === "import") ||
+    (segments.length === 3 && segments[2] === "import")
+  ) {
+    return handleCollectionImportRoute({method, segments, principal, event, ensureRoot});
   }
 
   // GET /collections/{slug}/works?q=&from=&size=

@@ -489,6 +489,8 @@ Resources:
           # Built by hand rather than !Ref: the state machine's role is this
           # function's role, so referencing the machine here would be circular.
           PUBLISH_STATE_MACHINE_ARN: !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-publish"
+          # Same story: ImportStateMachine also runs as this function's role.
+          IMPORT_STATE_MACHINE_ARN: !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-import"
       # The import walk hands off to itself when a very large work outruns one
       # invocation's time budget. Lambda's recursive-loop detection treats that
       # as a runaway and TERMINATES the chain after ~16 hops — silently, with
@@ -550,7 +552,9 @@ Resources:
             - Effect: Allow
               Action:
                 - states:StartExecution
-              Resource: !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-publish"
+              Resource:
+                - !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-publish"
+                - !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-import"
             # The publish run drops the edge cache for published/ once it has
             # written it. CloudFront ARNs carry no region segment.
             - Effect: Allow
@@ -566,7 +570,9 @@ Resources:
             - Effect: Allow
               Action:
                 - states:DescribeExecution
-              Resource: !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${AWS::StackName}-publish:*"
+              Resource:
+                - !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${AWS::StackName}-publish:*"
+                - !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${AWS::StackName}-import:*"
             # The Users section. Scoped to this stack's own pool, and to the
             # group/user calls it actually makes — notably NOT AdminCreateUser
             # or AdminDeleteUser: accounts stay a console/CLI operation.
@@ -692,6 +698,27 @@ Resources:
             ApiId: !Ref ManifestHttpApi
             Path: /collections
             Method: POST
+        # Importing a whole collection. "import" is a reserved collection id
+        # (sanitizeCollectionSlug), so these two literal paths cannot be shadowed
+        # by a collection that happens to be called that.
+        ImportCollectionPreview:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/import/preview
+            Method: POST
+        ImportCollection:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/import
+            Method: POST
+        GetCollectionImport:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /collections/{slug}/import
+            Method: GET
         DeleteCollection:
           Type: HttpApi
           Properties:
@@ -870,6 +897,162 @@ Resources:
             Error: PublishFailed
             Cause: "The publish run did not complete; see the collection's status object"
 
+
+  # Importing a whole IIIF Collection and every work in it.
+  #
+  # A state machine rather than the self-invoke chain in importAssets.js because
+  # collections run to thousands of works — which is exactly the case AGENTS.md
+  # says to copy PublishStateMachine for. Same shape as the publish pipeline: an
+  # INLINE Map whose Plan writes the work list to S3 and emits only batch
+  # indices, so the state payload stays a few KB against the 256KB limit.
+  ImportFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: false
+        Target: "node22"
+        Sourcemap: false
+        EntryPoints:
+          - aws/lambdas/import/index.js
+        External:
+          - "@aws-sdk/*"
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-import"
+      CodeUri: ../
+      Handler: index.handler
+      Timeout: 900
+      Environment:
+        Variables:
+          OPENSEARCH_ENDPOINT: !Ref OpenSearchEndpoint
+          SEARCH_INDEX_PREFIX: !If [SearchIndexPrefixProvided, !Ref SearchIndexPrefix, !Ref "AWS::StackName"]
+      # Shares ManifestFunction's role for the same reason PublishFunction does:
+      # the OpenSearch domain's access policy is not owned by this template, and
+      # every function that signs a request to it has to be pasted in by hand.
+      # One role keeps that one ARN.
+      Role: !GetAtt ManifestFunctionRole.Arn
+
+  ImportStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "${AWS::StackName}-import"
+      Type: STANDARD
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ImportFunction
+      Definition:
+        Comment: "Import one IIIF Collection and every work in it"
+        StartAt: Plan
+        States:
+          # Mints every work id up front and writes them to plan.json. That is
+          # what makes a retry idempotent: a batch always owns the same ids, so
+          # re-running it overwrites the same manifests instead of minting a
+          # second copy of every work.
+          Plan:
+            Type: Task
+            Resource: !GetAtt ImportFunction.Arn
+            Parameters:
+              task: plan
+              "slug.$": "$.slug"
+              "runId.$": "$.runId"
+              "sourceUrl.$": "$.sourceUrl"
+            ResultPath: "$.plan"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
+                Next: RecordFailure
+            Next: ImportWorks
+          ImportWorks:
+            Type: Map
+            ItemsPath: "$.plan.batches"
+            # The throttle, in batches. Each batch imports its works ONE AT A
+            # TIME, so this is 5 works in flight, each copying up to
+            # CANVAS_CONCURRENCY canvases — roughly 50 concurrent requests at the
+            # source whatever the size of the collection. Our own API could take
+            # far more; somebody else's may not.
+            MaxConcurrency: 5
+            Parameters:
+              task: batch
+              "slug.$": "$.slug"
+              "runId.$": "$.runId"
+              # $$ is the Step Functions CONTEXT object, not the state input:
+              # $$.Map.Item.Value is the current item. A single $ makes this
+              # $.Map.Item.Value, which looks plausible and fails at runtime with
+              # "could not be found in the input". Do not "fix" the doubled $.
+              "batchIndex.$": "$$.Map.Item.Value"
+            Iterator:
+              StartAt: ImportBatch
+              States:
+                ImportBatch:
+                  Type: Task
+                  Resource: !GetAtt ImportFunction.Arn
+                  # States.TaskFailed is what a source throttling us surfaces as,
+                  # so backing off here is what keeps a big run from hammering
+                  # somebody else's API when it starts pushing back.
+                  Retry:
+                    - ErrorEquals:
+                        - Lambda.TooManyRequestsException
+                        - Lambda.ServiceException
+                        - States.TaskFailed
+                      IntervalSeconds: 5
+                      MaxAttempts: 3
+                      BackoffRate: 2
+                  End: true
+            # The Map's aggregated output is capped at 256KB; each batch writes
+            # its own result object to S3, so nothing needs to come back here.
+            ResultPath: null
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
+                Next: RecordFailure
+            Next: WriteCollection
+          # Built from what the batches ACTUALLY did, never from the plan, so the
+          # collection can never advertise a manifest that 404s. This is also the
+          # only writer of the collection document during a run, which is what
+          # keeps the whole pipeline free of concurrent-write problems.
+          WriteCollection:
+            Type: Task
+            Resource: !GetAtt ImportFunction.Arn
+            Parameters:
+              task: writeCollection
+              "slug.$": "$.slug"
+              "runId.$": "$.runId"
+            ResultPath: "$.result"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
+                Next: RecordFailure
+            Next: Finalize
+          Finalize:
+            Type: Task
+            Resource: !GetAtt ImportFunction.Arn
+            Parameters:
+              task: finalize
+              "slug.$": "$.slug"
+              "runId.$": "$.runId"
+              "result.$": "$.result"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
+                Next: RecordFailure
+            End: true
+          # Clears the `importing` flag on every work that landed before writing
+          # the terminal status. That flag is what stops a publish freezing a
+          # half-rewritten manifest, so leaving it set on a dead run would make
+          # the collection unpublishable for ever.
+          RecordFailure:
+            Type: Task
+            Resource: !GetAtt ImportFunction.Arn
+            Parameters:
+              task: recordFailure
+              "slug.$": "$.slug"
+              "runId.$": "$.runId"
+              "error.$": "$.error"
+            Next: Failed
+          Failed:
+            Type: Fail
+            Error: ImportFailed
+            Cause: "The import run did not complete; see the collection's status object"
   IIIFImageFunction:
     Type: AWS::Serverless::Function
     Properties:

@@ -1,0 +1,114 @@
+{
+  "type": "Manifest",
+  "label": {
+    "none": [
+      "Carol's mom oral history"
+    ]
+  },
+  "items": [
+    {
+      "id": "https://api.dc.library.northwestern.edu/api/v2/file-sets/a946952c-5105-4b8a-93ee-9a460789d3d9?as=iiif",
+      "type": "Canvas",
+      "label": {
+        "none": [
+          "tape 1 of 1"
+        ]
+      },
+      "duration": 1889.799,
+      "items": [
+        {
+          "type": "AnnotationPage",
+          "items": [
+            {
+              "type": "Annotation",
+              "motivation": "painting",
+              "body": {
+                "id": "https://meadow-streaming.rdc.library.northwestern.edu/a9/46/95/2c/-5/10/5-/4b/8a/-9/3e/e-/9a/46/07/89/d3/d9/a946952c-5105-4b8a-93ee-9a460789d3d9.m3u8",
+                "type": "Sound",
+                "format": "application/x-mpegurl"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "https://api.dc.library.northwestern.edu/api/v2/file-sets/aa4ad482-0e58-4b33-af02-4d53954138e6?as=iiif",
+      "type": "Canvas",
+      "label": {
+        "none": [
+          "tape 1 of 1 asset back"
+        ]
+      },
+      "duration": 1,
+      "items": [
+        {
+          "type": "AnnotationPage",
+          "items": [
+            {
+              "type": "Annotation",
+              "motivation": "painting",
+              "body": {
+                "id": "https://iiif.dc.library.northwestern.edu/iiif/3/aa4ad482-0e58-4b33-af02-4d53954138e6/full/600,/0/default.jpg",
+                "type": "Image",
+                "format": "image/jpeg"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "https://api.dc.library.northwestern.edu/api/v2/file-sets/823f1af9-89fb-4d27-a49d-58dd79805174?as=iiif",
+      "type": "Canvas",
+      "label": {
+        "none": [
+          "tape 1 of 1 asset front"
+        ]
+      },
+      "duration": 1,
+      "items": [
+        {
+          "type": "AnnotationPage",
+          "items": [
+            {
+              "type": "Annotation",
+              "motivation": "painting",
+              "body": {
+                "id": "https://iiif.dc.library.northwestern.edu/iiif/3/823f1af9-89fb-4d27-a49d-58dd79805174/full/600,/0/default.jpg",
+                "type": "Image",
+                "format": "image/jpeg"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "https://api.dc.library.northwestern.edu/api/v2/file-sets/5b3ccad0-67ae-4153-90c7-04a15b8474e2?as=iiif",
+      "type": "Canvas",
+      "label": {
+        "none": [
+          "tape 1 of 1 asset"
+        ]
+      },
+      "duration": 1,
+      "items": [
+        {
+          "type": "AnnotationPage",
+          "items": [
+            {
+              "type": "Annotation",
+              "motivation": "painting",
+              "body": {
+                "id": "https://iiif.dc.library.northwestern.edu/iiif/3/5b3ccad0-67ae-4153-90c7-04a15b8474e2/full/600,/0/default.jpg",
+                "type": "Image",
+                "format": "image/jpeg"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

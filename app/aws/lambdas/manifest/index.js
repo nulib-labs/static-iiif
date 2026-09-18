@@ -45,94 +45,17 @@ const {
   desiredCollectionSlugs,
 } = require("./collections");
 const {
+  ImportError,
+  validateSourceUrl,
+  fetchSourceDocument,
+} = require("../../../shared/sourceFetch");
+const {
   triggerAssetImport,
   handleImportAssets,
   readImportStatus,
   resumeAssetImport,
   handleImportFailure,
 } = require("./importAssets");
-
-const MAX_IMPORT_BYTES = 5 * 1024 * 1024; // stay comfortably under the 6MB Lambda payload cap
-
-class ImportError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
-
-function validateSourceUrl(raw) {
-  const value = (raw || "").trim();
-  if (!value) {
-    throw new ImportError(400, "A manifest URL is required");
-  }
-  let parsed;
-  try {
-    parsed = new URL(value);
-  } catch (error) {
-    throw new ImportError(400, "That doesn't look like a valid URL");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new ImportError(400, "Only http(s) URLs are supported");
-  }
-  return parsed.toString();
-}
-
-async function fetchExternalManifest(sourceUrl) {
-  let response;
-  try {
-    response = await fetch(sourceUrl, {
-      redirect: "manual",
-      signal: AbortSignal.timeout(15000),
-    });
-  } catch (error) {
-    throw new ImportError(502, `Unable to reach that URL: ${error.message}`);
-  }
-
-  if (response.status >= 300 && response.status < 400) {
-    throw new ImportError(
-      400,
-      "The URL returned a redirect — please paste the final manifest URL directly.",
-    );
-  }
-
-  if (!response.ok) {
-    throw new ImportError(400, `Source server returned ${response.status}`);
-  }
-
-  const contentLength = Number(response.headers.get("content-length") || 0);
-  if (contentLength && contentLength > MAX_IMPORT_BYTES) {
-    throw new ImportError(400, "Manifest is too large to import (max 5MB)");
-  }
-
-  const text = await response.text();
-  if (text.length > MAX_IMPORT_BYTES) {
-    throw new ImportError(400, "Manifest is too large to import (max 5MB)");
-  }
-
-  let manifest;
-  try {
-    manifest = JSON.parse(text);
-  } catch (error) {
-    throw new ImportError(400, "URL did not return valid JSON");
-  }
-
-  const type = manifest?.type || manifest?.["@type"];
-  if (typeof type === "string" && type.toLowerCase().includes("collection")) {
-    throw new ImportError(
-      400,
-      "Collection import isn't supported yet — paste a single Manifest URL.",
-    );
-  }
-  if (type !== "Manifest") {
-    throw new ImportError(
-      400,
-      "Only IIIF Presentation 3.0 Manifests are supported right now.",
-    );
-  }
-
-  return manifest;
-}
 
 const s3 = new S3Client({});
 const bucket = process.env.IIIF_BUCKET;
@@ -340,7 +263,7 @@ exports.handler = async (event) => {
     try {
       const body = parseBody(event);
       const sourceUrl = validateSourceUrl(body.sourceUrl);
-      const manifest = await fetchExternalManifest(sourceUrl);
+      const manifest = await fetchSourceDocument(sourceUrl, {expect: "Manifest"});
       const label = extractLabel(manifest.label);
       const itemCount = Array.isArray(manifest.items) ? manifest.items.length : 0;
       const thumbnail = itemCount > 0 ? canvasThumbnailService(manifest.items[0]) : null;
@@ -390,7 +313,14 @@ exports.handler = async (event) => {
         writeManifest,
       });
       try {
-        await triggerAssetImport({identifier, total: importedManifest.items.length});
+        // `items` is optional in the spec, and a Manifest that omits it threw a
+        // TypeError here — into the generic catch, returning a 500 AFTER the
+        // work had already been written and filed. triggerAssetImport already
+        // no-ops on a total of 0.
+        await triggerAssetImport({
+          identifier,
+          total: Array.isArray(importedManifest.items) ? importedManifest.items.length : 0,
+        });
       } catch (error) {
         console.error("Failed to start asset import", error);
       }

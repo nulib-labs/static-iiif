@@ -145,9 +145,12 @@ collection, so the collections list is where you start and a work is always
 reached through its collection.
 
 - **Collections** (`/`) — the home page. Lists the root collection's members;
-  admins can add and delete (delete only when empty). A collection's name links
-  through to its works. Renaming is impossible by construction — the slug is the
-  identity. See the Collections section below.
+  admins can add and delete (delete only when empty). Add branches the same way
+  Add Work does — **Import Collection** (paste a source Collection URL and get
+  every work in it) or **Create Collection** — via `AddCollectionModal`
+  (`ui/src/components/collections/`). A collection's name links through to its
+  works. Renaming is impossible by construction — the slug is the identity. See
+  the Collections section below.
 - **A collection's works** (`/collection/:slug`) — create/manage the IIIF
   Presentation manifests in one collection (the `working/presentation/manifest/` prefix
   in the IIIF bucket). The page heading is the collection's title.
@@ -262,7 +265,9 @@ app/
         store.js           #   the ONE manifest writer: S3 PUT + working-index upsert together
         workIndex.js       #   the working index: write-through, works list, sync counts
         publishRoutes.js   #   start a run, read its progress, flip the alias
+        importRoutes.js    #   collection import: preview, start a run, read its progress
       publish/             # Lambda: PublishStateMachine's task worker
+      import/              # Lambda: ImportStateMachine's task worker
   shared/                  # SDK-free unless noted; see Testing Guidelines
     space.js               # working/published spaces and their key + URL prefixes
     collection.js          # IIIF Collection documents, slugs, partOf, reconciliation
@@ -270,8 +275,10 @@ app/
     search.js              # index/alias names and the two document shapes
     access.js              # every authorization decision
     language.js            # IIIF language maps
+    sourceFetch.js         # fetching someone else's IIIF doc, and dropping A/V
     manifest.js            # manifest keys/templates/listing — loads the SDK
     opensearch.js          # signed HTTP to the domain — loads the SDK
+    assetCopy.js           # copy one canvas's image onto our Image API — loads the SDK
 ui/                        # React/Vite frontend — talks to the deployed AWS stack
   .env.local               # Your personal env config (gitignored — copy from .env.local.example)
   .env.local.example
@@ -521,6 +528,121 @@ check that metric first.
 A failed handoff now writes an `error` into the status object so the UI's
 staleness check surfaces a Resume button instead of the import looking alive.
 
+## Collection import
+
+Paste one Collection URL on the Collections screen and get the collection plus
+every work in it. `POST /collections/import/preview` looks at the source,
+`POST /collections/import` creates the collection and starts a run, and
+`GET /collections/{slug}/import` reports on it.
+
+The run is **`ImportStateMachine`** (`app/aws/lambdas/import/`), not the
+self-invoke chain in `importAssets.js`. Collections run to thousands of works,
+which is exactly the case this file already said to copy PublishStateMachine
+for, and the two pipelines are deliberately the same shape:
+
+```
+Plan ─→ ImportWorks ─→ WriteCollection ─→ Finalize
+          (inline Map, MaxConcurrency 5)        ↘ RecordFailure ─→ Failed
+```
+
+**Every work id is minted in `Plan`**, before a byte is fetched, and written to
+`plan.json`. That is what makes a retry idempotent: batch 7 always owns the same
+ids, so re-running it overwrites the same manifest objects instead of minting a
+second copy of every work. Only batch indices go into the state payload, which
+keeps it kilobytes against the 256KB limit.
+
+**Ten works per Map iteration, imported one at a time inside the task.** The
+batching is not a throughput choice: a STANDARD execution has a **25,000-event
+history limit** and each iteration costs ~6 events, so one work per iteration
+would cap out near 4,000 works and a big collection would die mid-run with
+nothing actually wrong. Ten keeps a 10,000-work import at ~1,000 iterations.
+Concurrency then reads in the unit that matters — `MaxConcurrency: 5` is five
+*works* in flight, each copying up to `CANVAS_CONCURRENCY` canvases, so roughly
+50 concurrent requests at the source whatever the size of the collection. Our
+own API could take far more; somebody else's may not.
+
+A source that throttles us (429) or falls over (5xx) raises a **retryable**
+ImportError, which the batch deliberately lets escape rather than catching per
+work: no result object is written, the Map's Retry backs off, and the whole batch
+re-runs — idempotently, because the ids were minted in Plan. Catching it per work
+would record a few hundred works as permanently failed because the source asked
+us to slow down. A 400 is never retried; the answer would be the same.
+
+### The collection document is written twice, and never per work
+
+1. **At the start**, synchronously in the POST, as an *empty* collection. An
+   admin-created collection is allowed to have no members, so this is a valid
+   state rather than a placeholder — and it means the collection is registered
+   and resolvable from the moment the button is pressed.
+2. **At the end**, in `WriteCollection`, built from the task results and **never
+   from the plan**, so a work whose write failed is simply absent and the
+   collection can never advertise a manifest that 404s.
+
+**This is the whole answer to concurrent writes, and it is load-bearing.** The
+single-work path calls `fileNewWork`, which does `ensureRoot()` →
+`reconcileQuietly` → rewrite leaf + rewrite root. Running that a thousand times
+concurrently is a thousand read-modify-writes of the same two objects with lost
+updates guaranteed. So **collection import must never call `fileNewWork`.**
+Instead it uses the split this file already draws: *authority* is each work's own
+`partOf`, written inside its own task and touching only that work's object;
+*projection* is the leaf and root, rebuilt once after the Map joins. Members are
+ordered with the exported `sortMembers`, so "first member" — whose thumbnail the
+collection borrows — means the same thing a reindex would make it mean.
+
+Each task writes a distinct result key under
+`internal/collection-import/{slug}/{runId}/works/{n}.json`, so nothing contends,
+and progress is one `ListObjectsV2` — which is also what lets a page reload pick
+a run back up. The run mutex is the conditional write on `status.json`, the same
+`IfNoneMatch`/`IfMatch` pair the publish routes use.
+
+### Indexing is unchanged: per work, on save
+
+`writeManifest` is still the single writer and still indexes in the same call.
+The only nuance is the `skipIndex` flag that already existed for the canvas walk:
+copying canvases rewrites the same manifest repeatedly, so each work is indexed
+explicitly twice instead — once when it is created, so the row appears in the
+works list straight away, and once when its canvases are done, with the content
+hash of the bytes actually stored. The manifest is re-read before that hash is
+taken, because `writeManifest` normalizes `@context` on the way out and hashing
+the in-memory copy would hash something that was never stored.
+
+> **`RecordFailure` clears `importing` on every work that landed.** That flag is
+> what stops a publish freezing a half-rewritten manifest, so a run that died
+> would otherwise leave the collection unpublishable for ever. Publish needs no
+> equivalent because it writes to a throwaway candidate index; this does not.
+
+### Audio and video are dropped
+
+`imageCanvasesOnly` (`app/shared/sourceFetch.js`) filters out every canvas whose
+painting body is not `type: "Image"`, **before** the manifest is written, so a
+dropped canvas never reaches S3. Passing them through was the alternative and was
+rejected: the canvas would keep pointing at the source's streaming server, and a
+published collection would then depend on a host we do not control.
+
+A/V is per **canvas**, not per work — a source may hang supplemental images off
+an A/V work — so a mixed work keeps its images and loses only what we cannot
+host. A work left with no canvases at all is allowed; `triggerAssetImport`
+no-ops on zero. The count is reported on the progress banner rather than being
+silent. **This is temporary.** When A/V support lands, these works are
+re-imported, and this filter is where to start.
+
+### Known limits, all deliberate
+
+- **Only the collection's `label` survives.** The source's `summary`,
+  `provider`, `logo`, `requiredStatement`, `homepage` and `seeAlso` are dropped,
+  because `buildCollectionDocument` takes only `{baseUrl, slug, label, members}`
+  and reindex would wipe anything else. See the rule above about never adding
+  collection state the manifests do not determine.
+- **Nested sub-collections are skipped, not recursed into**, and counted.
+  Recursion would make one paste an unbounded walk of somebody else's tree.
+- **A paged source Collection is not followed.** Nothing in NUL's output pages,
+  and the spec barely supports it.
+- **No size cap.** A huge collection is a long run, not an error; the member
+  count is shown before the curator commits.
+- `import` is a **reserved collection slug** (`sanitizeCollectionSlug`, mirrored
+  in `ui/src/lib/collectionSlug.js`), because `POST /collections/import` would
+  otherwise be ambiguous with a collection legitimately named that.
+
 ## Collections
 
 A work belongs to **exactly one** Collection, changed from the work's own page
@@ -631,8 +753,10 @@ Routes: `GET /collections` (one GetObject; creates the root if absent),
 `GET /collections/{slug}/works` (index-backed; carries the collection label and
 whole-collection sync counts so the page needs one request),
 `PUT /manifests/{id}/collection` (a move), the three publish routes under
-`/collections/{slug}/publish`, and `POST /collections/reindex`
-(full rebuild + prune, plus the search index). Reconciliation reads the
+`/collections/{slug}/publish`, the three import routes
+(`POST /collections/import/preview`, `POST /collections/import`,
+`GET /collections/{slug}/import` — see Collection import above), and
+`POST /collections/reindex` (full rebuild + prune, plus the search index). Reconciliation reads the
 **union** of current and desired slugs — never the diff, which would let a retry
 short-circuit after a partial failure — and writes leaves, then the root, then
 deletions, so the root never advertises a collection whose document 404s.
@@ -937,7 +1061,7 @@ That is the reason for the split in `app/shared/`, and it is worth keeping delib
 
 | SDK-free, unit-tested | Loads the SDK, not testable from the root |
 |---|---|
-| `space.js`, `collection.js`, `publish.js`, `search.js`, `access.js`, `language.js` | `manifest.js`, `opensearch.js` |
+| `space.js`, `collection.js`, `publish.js`, `search.js`, `access.js`, `language.js`, `sourceFetch.js` | `manifest.js`, `opensearch.js`, `assetCopy.js` |
 
 Keep `collection.js` free of any `manifest.js` import — `manifest.js` loads the SDK, and the reverse direction would also be a require cycle. `node:crypto` is a core module, so hashing in `publish.js` is fine.
 

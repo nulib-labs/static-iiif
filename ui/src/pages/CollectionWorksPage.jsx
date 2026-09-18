@@ -14,6 +14,7 @@ import PageHeading from "../components/PageHeading";
 import AddWorkModal from "../components/works/AddWorkModal";
 import WorksTable from "../components/works/WorksTable";
 import PublishPanel from "../components/works/PublishPanel";
+import CollectionImportBanner from "../components/collections/CollectionImportBanner";
 
 function WorksListPanel({
   manifestApiAvailable,
@@ -356,6 +357,9 @@ export default function CollectionWorksPage() {
 
   return (
     <>
+      {/* Only renders while a collection import is running, or afterwards if
+          it hit trouble or dropped something. Silent the rest of the time. */}
+      <CollectionImportBanner slug={slug} onProgress={refreshWorks} />
       <WorksListPanel
         manifestApiAvailable={manifestApiAvailable}
         manifestError={worksError}

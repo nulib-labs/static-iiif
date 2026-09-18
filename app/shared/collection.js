@@ -44,6 +44,15 @@ const MAX_COLLECTIONS_PER_WORK = 1;
 const collectionSlugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const collectionIdPattern = /\/presentation\/collection\/([a-z0-9-]+)\/collection\.json$/;
 
+// Slugs a collection may not take, because a route already means something else
+// by them. "index" is the root register's own slug. "import" is the collection
+// import's route segment — POST /collections/import would otherwise be
+// ambiguous with a collection legitimately named "import", and the pattern
+// above happily allows that name.
+//
+// Mirrored in ui/src/lib/collectionSlug.js; the two have to move together.
+const RESERVED_COLLECTION_SLUGS = new Set([ROOT_COLLECTION_SLUG, "import"]);
+
 class CollectionNameError extends Error {}
 
 // The label is a display string and nothing else. It is NOT reduced to a slug
@@ -94,7 +103,7 @@ function sanitizeCollectionSlug(raw) {
       `Collection ids are limited to ${MAX_SLUG_LENGTH} characters`,
     );
   }
-  if (trimmed === ROOT_COLLECTION_SLUG) {
+  if (RESERVED_COLLECTION_SLUGS.has(trimmed)) {
     throw new CollectionNameError(`"${trimmed}" is a reserved collection name`);
   }
   return trimmed;
@@ -518,4 +527,9 @@ module.exports = {
   planReconciliation,
   canonicalizeCollectionLabels,
   manifestThumbnail,
+  // Exported so the collection import builds its leaf in the same order
+  // reconciliation would. "First member" (whose thumbnail the collection
+  // borrows) has to mean the same thing however the document was produced,
+  // or a reindex would silently change a collection's picture.
+  sortMembers,
 };
