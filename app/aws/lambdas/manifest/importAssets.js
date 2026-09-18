@@ -167,7 +167,12 @@ async function handleImportFailure(event) {
   });
 }
 
-async function handleImportAssets({identifier, canvasIndex}) {
+// `reconcile` is injected by the dispatcher rather than required, because
+// collections.js already requires THIS module (for readImportStatus) and the
+// reverse direction would be a cycle — the same reason fileNewWork takes
+// `writeManifest` as an argument. It is re-supplied on every invocation,
+// including the self-invoked handoffs, so it survives the chain.
+async function handleImportAssets({identifier, canvasIndex, reconcile}) {
   if (!identifier || typeof canvasIndex !== "number" || canvasIndex > MAX_CANVAS_INDEX) {
     console.error("Import-assets: invalid or runaway payload", {identifier, canvasIndex});
     if (identifier) {
@@ -340,6 +345,16 @@ async function handleImportAssets({identifier, canvasIndex}) {
     syncState: SYNC_NEW,
     importing: false,
   });
+  // Refresh the collection's cached copy of this work.
+  //
+  // fileNewWork wrote that entry when the work was FILED, which is before this
+  // walk had copied anything — so the collection cached a label and a thumbnail
+  // still pointing at the source, and nothing ever came back to correct them.
+  // `desired: null` is exactly the "membership unchanged; refresh cached
+  // labels/thumbnails" case reconcileManifestCollections documents.
+  if (reconcile) {
+    await reconcile({manifest: finalManifest});
+  }
   // A canvas that failed to copy still points at the source, so the import is
   // not "complete" just because the walk reached the end.
   await writeImportStatus(identifier, {

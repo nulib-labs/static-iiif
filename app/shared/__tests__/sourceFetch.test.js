@@ -240,3 +240,108 @@ test("throttling and 5xx are retryable; a bad paste is not", async () => {
     false,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Structural ids
+// ---------------------------------------------------------------------------
+
+const {localizeStructuralIds} = require("../sourceFetch");
+const nulManifest = require("../__fixtures__/nul-manifest.json");
+
+const OURS = "https://iiif.example.org/working/presentation/manifest/abc-123/manifest.json";
+const BASE = "https://iiif.example.org/working/presentation/manifest/abc-123";
+
+const allUrls = (value, out = []) => {
+  if (Array.isArray(value)) value.forEach((v) => allUrls(v, out));
+  else if (value && typeof value === "object") Object.values(value).forEach((v) => allUrls(v, out));
+  else if (typeof value === "string" && /^https?:/.test(value)) out.push(value);
+  return out;
+};
+
+test("every id inside an imported work becomes ours", () => {
+  // The bug this covers: only the top-level id used to be rewritten, so a work
+  // imported from NUL kept THEIR identifiers for every canvas, page, annotation
+  // and placeholder — ids that dereference to their canvas, serving their
+  // pixels, from a manifest claiming to be ours.
+  const manifest = localizeStructuralIds({...structuredClone(nulManifest), id: OURS});
+  const canvas = manifest.items[0];
+
+  assert.equal(canvas.id, `${BASE}/canvas/0`);
+  assert.equal(canvas.items[0].id, `${BASE}/canvas/0/page/1`);
+  assert.equal(canvas.items[0].items[0].id, `${BASE}/canvas/0/annotation/1`);
+  // The target must follow the canvas, or the annotation paints onto nothing.
+  assert.equal(canvas.items[0].items[0].target, `${BASE}/canvas/0`);
+  assert.equal(canvas.placeholderCanvas.id, `${BASE}/canvas/0/placeholder`);
+  assert.equal(canvas.placeholderCanvas.items[0].items[0].target, `${BASE}/canvas/0/placeholder`);
+});
+
+test("seeAlso, partOf and provider still point at the source — they are about the source", () => {
+  // The fixture is a trimmed NUL manifest and carries partOf but not seeAlso or
+  // provider, so those two are supplied here rather than assumed.
+  const manifest = localizeStructuralIds({
+    ...structuredClone(nulManifest),
+    id: OURS,
+    seeAlso: [{id: "https://api.dc.library.northwestern.edu/api/v2/works/6f336d7c", type: "Dataset"}],
+    provider: [{id: "https://www.library.northwestern.edu/", type: "Agent"}],
+  });
+  assert.ok(manifest.seeAlso[0].id.includes("api.dc.library.northwestern.edu"));
+  assert.ok(manifest.partOf[0].id.includes("api.dc.library.northwestern.edu"));
+  assert.ok(allUrls(manifest.provider).some((u) => u.includes("northwestern.edu")));
+});
+
+test("nothing structural is left claiming the source's identity", () => {
+  const manifest = localizeStructuralIds({...structuredClone(nulManifest), id: OURS});
+  // Everything the source still owns must be reachable only through the fields
+  // that are ABOUT it. Nothing under items[] may reference their API.
+  const inside = allUrls(manifest.items);
+  assert.equal(
+    inside.filter((u) => u.includes("api.dc.library.northwestern.edu")).length,
+    0,
+    "a canvas, page, annotation or placeholder id still points at the source API",
+  );
+});
+
+test("ids are derived from the index, so a resumed import re-mints them identically", () => {
+  const once = localizeStructuralIds({...structuredClone(nulManifest), id: OURS});
+  const twice = localizeStructuralIds({...structuredClone(nulManifest), id: OURS});
+  assert.deepEqual(allUrls(once.items), allUrls(twice.items));
+  // And running it again over its own output changes nothing.
+  assert.deepEqual(allUrls(localizeStructuralIds(once).items), allUrls(once.items));
+});
+
+test("a fragment selector survives, because it says WHERE on the canvas", () => {
+  const manifest = localizeStructuralIds({
+    id: OURS,
+    items: [
+      {
+        items: [
+          {items: [{target: "https://source.org/canvas/9#xywh=10,20,30,40"}]},
+        ],
+      },
+    ],
+  });
+  assert.equal(
+    manifest.items[0].items[0].items[0].target,
+    `${BASE}/canvas/0#xywh=10,20,30,40`,
+  );
+});
+
+test("an object target is relabelled too, and odd shapes do not throw", () => {
+  const manifest = localizeStructuralIds({
+    id: OURS,
+    items: [
+      {items: [{items: [{target: {id: "https://source.org/c/1", type: "Canvas"}}]}]},
+      null,
+      {items: null},
+      {items: [{items: [null]}]},
+    ],
+  });
+  assert.equal(manifest.items[0].items[0].items[0].target.id, `${BASE}/canvas/0`);
+  assert.equal(manifest.items[2].id, `${BASE}/canvas/2`);
+});
+
+test("a manifest with no usable id is left alone rather than given junk ids", () => {
+  const orphan = {items: [{id: "https://source.org/c/1"}]};
+  assert.equal(localizeStructuralIds(orphan).items[0].id, "https://source.org/c/1");
+  assert.doesNotThrow(() => localizeStructuralIds(null));
+});

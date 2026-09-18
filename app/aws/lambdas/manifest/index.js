@@ -48,6 +48,7 @@ const {
   ImportError,
   validateSourceUrl,
   fetchSourceDocument,
+  localizeStructuralIds,
 } = require("../../../shared/sourceFetch");
 const {
   triggerAssetImport,
@@ -189,7 +190,9 @@ exports.handler = async (event) => {
   }
 
   if (event?.action === "importAssets") {
-    return handleImportAssets(event);
+    // reconcileQuietly is handed in here because collections.js requires
+    // importAssets.js, so importAssets.js cannot require it back.
+    return handleImportAssets({...event, reconcile: reconcileQuietly});
   }
 
   const method = event?.requestContext?.http?.method || event?.httpMethod || "GET";
@@ -298,12 +301,17 @@ exports.handler = async (event) => {
       // entries claiming to be *ours* while pointing somewhere we don't own are
       // dropped — that happens when importing from another static-iiif
       // deployment, and keeping them would invent collections nobody asked for.
-      const importedManifest = stripForeignManagedEntries(
-        {
-          ...manifest,
-          id: buildManifestId(manifestBaseUrl, identifier),
-        },
-        {baseUrl: manifestBaseUrl},
+      // localizeStructuralIds AFTER the id is set — it derives every canvas,
+      // page and annotation id from the manifest's own. Without it the work
+      // keeps the source's identifiers for everything inside it.
+      const importedManifest = localizeStructuralIds(
+        stripForeignManagedEntries(
+          {
+            ...manifest,
+            id: buildManifestId(manifestBaseUrl, identifier),
+          },
+          {baseUrl: manifestBaseUrl},
+        ),
       );
       await writeManifest(identifier, importedManifest, {syncState: SYNC_NEW});
       const filedManifest = await fileNewWork({

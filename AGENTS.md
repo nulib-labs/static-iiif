@@ -528,6 +528,18 @@ check that metric first.
 A failed handoff now writes an `error` into the status object so the UI's
 staleness check surfaces a Resume button instead of the import looking alive.
 
+**The walk refreshes the collection when it finishes.** `fileNewWork` writes the
+work's entry into the collection document at FILE time — before this walk has
+copied anything — so the collection cached a label and a thumbnail still pointing
+at the source, and nothing ever came back to correct them. The tail of the walk
+now calls `reconcileQuietly({manifest})`, which is exactly the
+"membership unchanged; refresh cached labels/thumbnails" case
+`reconcileManifestCollections` documents. `reconcile` is **injected by the
+dispatcher** rather than required, because collections.js already requires
+importAssets.js and the reverse would be a cycle — the same reason `fileNewWork`
+takes `writeManifest` as an argument. The collection import has never had this
+problem: its `WriteCollection` runs after every work is copied.
+
 ## Collection import
 
 Paste one Collection URL on the Collections screen and get the collection plus
@@ -642,6 +654,48 @@ re-imported, and this filter is where to start.
 - `import` is a **reserved collection slug** (`sanitizeCollectionSlug`, mirrored
   in `ui/src/lib/collectionSlug.js`), because `POST /collections/import` would
   otherwise be ambiguous with a collection legitimately named that.
+
+## What an imported work keeps, and what it does not
+
+Both import paths — `POST /manifests/import` and the collection state machine —
+run `localizeStructuralIds` (`app/shared/sourceFetch.js`) after setting the
+manifest's own id. It re-mints **Canvas, AnnotationPage, Annotation, annotation
+`target` and the whole `placeholderCanvas` subtree** off our own base:
+
+```
+{manifest base}/canvas/{n}
+{manifest base}/canvas/{n}/page/{i}
+{manifest base}/canvas/{n}/annotation/{i}
+{manifest base}/canvas/{n}/placeholder…
+```
+
+That shape matches what the UI mints for an uploaded canvas
+(`ui/src/lib/canvasAssets.js`), so imported and uploaded works finally agree.
+Derived from the canvas **index**, not a timestamp, so a resumed or retried
+import re-mints exactly the same ids and running it twice is a no-op. A later
+reorder does not renumber them: an id records identity, not position.
+
+> **Originally only the top-level `id` was rewritten**, which left an imported
+> work carrying the source's identifiers for everything inside it. That was never
+> a decision, just an omission, and it is worth knowing why it mattered. Those
+> ids *dereference*: NUL's `…/file-sets/{uuid}?as=iiif` returns their real
+> Canvas, whose painting body points at their image service — so our manifest
+> claimed to be their canvas while serving different pixels. It also broke the
+> rule that a document under `working/` links only to other `working/`
+> documents, because publish rewrites URLs under OUR base and passes foreign ones
+> straight through into published output. And importing one source work twice
+> produced two of our manifests containing identical canvas ids.
+>
+> **Works imported before this are not migrated.** Re-import them; nothing
+> auto-heals, deliberately, because silently changing the ids of an
+> already-published work is worse than leaving it alone.
+
+What is deliberately **left pointing at the source**, because it is *about* the
+source: `seeAlso` (provenance), the source's own `partOf`, `homepage`,
+`provider`, `logo` and `rights`. On a real NUL manifest this takes the
+source-API references from 18 to 3 — `seeAlso`, their `partOf`, and the
+manifest-level `thumbnail`, which `repointManifestThumbnail` moves onto our
+Image API once the canvases have been copied.
 
 ## Collections
 

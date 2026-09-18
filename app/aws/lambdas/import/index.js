@@ -22,6 +22,7 @@ const {
   fetchSourceDocument,
   collectionMembers,
   imageCanvasesOnly,
+  localizeStructuralIds,
 } = require("../../../shared/sourceFetch");
 const {buildManifestId, extractLabel} = require("../../../shared/manifest");
 const {
@@ -182,9 +183,13 @@ async function importOneWork({slug, collectionLabel, work}) {
   // dropped. Membership in OUR collection is then written into partOf — which
   // is the authority. The collection document is a projection, rebuilt once at
   // the end, so nothing here touches a shared object.
-  let manifest = stripForeignManagedEntries(
-    {...source, id: buildManifestId(baseUrl, work.workId), items},
-    {baseUrl},
+  // localizeStructuralIds re-mints every canvas, page and annotation id off the
+  // manifest's own, so nothing inside still claims the source's identity.
+  let manifest = localizeStructuralIds(
+    stripForeignManagedEntries(
+      {...source, id: buildManifestId(baseUrl, work.workId), items},
+      {baseUrl},
+    ),
   );
   manifest = applyCollections(manifest, {
     baseUrl,

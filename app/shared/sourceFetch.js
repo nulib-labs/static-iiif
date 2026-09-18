@@ -174,6 +174,66 @@ function imageCanvasesOnly(manifest) {
   return {items: kept, dropped: items.length - kept.length};
 }
 
+// Re-mints the ids of the structures we now own: Canvas, AnnotationPage,
+// Annotation and the placeholderCanvas subtree.
+//
+// Only the manifest's top-level id used to be rewritten, so an imported work
+// kept the SOURCE's identifiers for everything inside it. That is not a cosmetic
+// problem. Those ids dereference: NUL's …/file-sets/{uuid}?as=iiif returns their
+// real Canvas, whose painting body points at their image service — so our canvas
+// claimed to be their canvas while serving different pixels. It also broke the
+// rule that a document under working/ links only to other working/ documents,
+// because publish rewrites URLs under OUR base and passes foreign ones straight
+// through into published output. And importing the same source work twice minted
+// two of our manifests containing identical canvas ids.
+//
+// The shape matches what the UI mints for an uploaded canvas
+// (ui/src/lib/canvasAssets.js), so imported and uploaded works finally agree.
+// Derived from the canvas INDEX rather than a timestamp, so a resumed or retried
+// import re-mints exactly the same ids. A later reorder does not renumber them —
+// an id records identity, not position.
+//
+// seeAlso, partOf, homepage, provider, logo and rights are deliberately NOT
+// touched: those point at the source because they are ABOUT the source.
+//
+// Mutates in place, like repointCanvasDerivatives, and returns the manifest.
+function localizeStructuralIds(manifest) {
+  const base = String(manifest?.id || "").replace(/\/manifest\.json$/i, "");
+  if (!base) return manifest;
+  const items = Array.isArray(manifest.items) ? manifest.items : [];
+  items.forEach((canvas, index) => {
+    const canvasId = `${base}/canvas/${index}`;
+    relabelCanvas(canvas, canvasId);
+    if (canvas?.placeholderCanvas) {
+      relabelCanvas(canvas.placeholderCanvas, `${canvasId}/placeholder`);
+    }
+  });
+  return manifest;
+}
+
+function relabelCanvas(canvas, canvasId) {
+  if (!canvas || typeof canvas !== "object") return;
+  canvas.id = canvasId;
+  const pages = Array.isArray(canvas.items) ? canvas.items : [];
+  pages.forEach((page, pageIndex) => {
+    if (!page || typeof page !== "object") return;
+    page.id = `${canvasId}/page/${pageIndex + 1}`;
+    const annotations = Array.isArray(page.items) ? page.items : [];
+    annotations.forEach((annotation, annotationIndex) => {
+      if (!annotation || typeof annotation !== "object") return;
+      annotation.id = `${canvasId}/annotation/${annotationIndex + 1}`;
+      // The target is the canvas being painted onto. A fragment selector
+      // (#xywh=...) is part of WHERE on the canvas, so it has to survive.
+      if (typeof annotation.target === "string") {
+        const hash = annotation.target.indexOf("#");
+        annotation.target = hash === -1 ? canvasId : canvasId + annotation.target.slice(hash);
+      } else if (annotation.target && typeof annotation.target.id === "string") {
+        annotation.target.id = canvasId;
+      }
+    });
+  });
+}
+
 module.exports = {
   ImportError,
   MAX_MANIFEST_BYTES,
@@ -183,4 +243,5 @@ module.exports = {
   collectionMembers,
   paintingBody,
   imageCanvasesOnly,
+  localizeStructuralIds,
 };
