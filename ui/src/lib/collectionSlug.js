@@ -28,7 +28,9 @@ export function suggestCollectionSlug(label) {
 // than shared because the UI is a separate package with no path into app/ —
 // worth knowing that the two have to move together.
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const RESERVED = new Set(["index"]);
+// "index" is the root register's slug; "import" is the collection import's route
+// segment. Mirrors RESERVED_COLLECTION_SLUGS in app/shared/collection.js.
+const RESERVED = new Set(["index", "import"]);
 
 export function collectionSlugError(slug) {
   if (!slug) return "An id is required";

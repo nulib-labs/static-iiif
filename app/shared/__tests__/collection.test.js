@@ -61,6 +61,13 @@ test("sanitizeCollectionSlug validates without transforming", () => {
     assert.throws(() => sanitizeCollectionSlug(bad), /required|may only include/, bad);
   }
   assert.throws(() => sanitizeCollectionSlug("index"), /reserved/);
+  // "import" is the collection import's own route segment, so a collection may
+  // not take it: POST /collections/import would otherwise be ambiguous with a
+  // collection named "import", which the slug pattern happily allows.
+  assert.throws(() => sanitizeCollectionSlug("import"), /reserved/);
+  // Only the exact words, not anything containing them.
+  assert.equal(sanitizeCollectionSlug("imported-maps"), "imported-maps");
+  assert.equal(sanitizeCollectionSlug("index-of-maps"), "index-of-maps");
 });
 
 test("key and id builders", () => {

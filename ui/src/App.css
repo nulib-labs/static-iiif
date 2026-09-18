@@ -411,6 +411,13 @@ main.layout {
   object-fit: cover;
 }
 
+/* The collection import's preview thumbnail is not clickable: the Collection
+   document is deliberately never sent to the browser, so unlike the work
+   import's preview there is nothing to open in a viewer. */
+.import-preview-thumbnail--static {
+  cursor: default;
+}
+
 .import-preview-thumbnail__zoom {
   position: absolute;
   bottom: calc(3 * var(--px));
