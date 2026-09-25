@@ -99,6 +99,16 @@ Resources:
       - AVTranscodeFunctionS3Permission
     Properties:
       BucketName: !Sub "${AWS::StackName}-source"
+      # A browser upload of a large file is a multipart upload, and closing the
+      # tab midway leaves its parts behind: invisible in a listing, billed as
+      # storage, and never cleaned up by anything else. Nothing legitimate
+      # takes three days to finish.
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 3
       NotificationConfiguration:
         LambdaConfigurations:
           - Event: s3:ObjectCreated:*
@@ -134,6 +144,14 @@ Resources:
     UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub "${AWS::StackName}-iiif"
+      # The same rule as the source bucket, for the multipart writes that land
+      # here: lib-storage uploads during import, and MediaConvert's own.
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 3
       # Nothing reaches this bucket directly any more: every IIIF document is
       # served through IIIFDistribution, which reads via OAC. The website
       # endpoint went with it — it was already unused, because IIIF_BASE_URL has
@@ -671,6 +689,18 @@ Resources:
             ApiId: !Ref ManifestHttpApi
             Path: /manifests/{id}/items
             Method: PUT
+        ListUnattachedMedia:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/{id}/media
+            Method: GET
+        DiscardMedia:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ManifestHttpApi
+            Path: /manifests/{id}/media/{assetId}
+            Method: DELETE
         UpdateManifestCollection:
           Type: HttpApi
           Properties:
@@ -1138,9 +1168,27 @@ Resources:
               Condition:
                 StringEquals:
                   "iam:PassedToService": mediaconvert.amazonaws.com
+            # Read/replace/remove media.json and renditions. Delete and List are
+            # for one case: an asset discarded while its job was still running,
+            # whose late-arriving outputs are removed when the job completes.
             - Effect: Allow
-              Action: s3:PutObject
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
               Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif/av/*"
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-iiif"
+              Condition:
+                StringLike:
+                  s3:prefix:
+                    - "av/*"
+            # HeadObject on the upload: its original filename, and whether it
+            # still exists when the job completes.
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:aws:s3:::${AWS::StackName}-source/av/*"
       Events:
         # The account's default bus carries every personal stack's jobs, so the
         # rule matches only jobs this stack tagged as its own.

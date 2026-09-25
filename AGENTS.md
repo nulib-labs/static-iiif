@@ -686,7 +686,9 @@ UI polls media.json through IIIFDistribution ───────────�
 minutes or 10GB of `/tmp`. Video is HLS with **Automated ABR**: MediaConvert
 picks the rendition ladder from the source and never upscales, which is why
 the video output has no width, height or bitrate, and why audio sits in its own
-output joined by `AudioGroupId`. It also captures a frame at 3s (at 0s for a
+output joined by `AudioGroupId`. It also requires H.264 `QualityTuningLevel: MULTI_PASS_HQ`,
+and that exact value: leaving it out and `SINGLE_PASS_HQ` are both rejected at
+submit, which the first two deployed videos found. It also captures a frame at 3s (at 0s for a
 clip shorter than that) as the poster. Audio is a single audio-only HLS output,
 so both kinds share one code path and one body `format`.
 
@@ -728,11 +730,54 @@ Known gaps, all deliberate for a first pass:
 - **Works-list thumbnails are image-service ids only** (`canvasThumbnailService`),
   so a video-only work shows none there. The collection thumbnail does fall back
   to the poster, via `manifestThumbnail`.
-- **Pending uploads live in the component.** Leaving the page mid-transcode
-  loses the pending item; the job still finishes and its output sits orphaned
-  under `av/` until the work is deleted.
 - **Deleting a work clears `av/{workId}/`** in both buckets. Removing a single
-  canvas does not delete its media, which is the same as images.
+  canvas does not delete its media. The media comes back through recovery
+  (below) as "ready to add", and discarding it there is what deletes it.
+
+### Leaving the page: recovery and discard
+
+A pending upload used to exist only in `AssetDropzone`'s state, so leaving the
+page orphaned it. The transcode still ran and was paid for, and nothing could
+find it again. **Nothing new is stored to fix this.** Three existing artifacts
+already say everything the UI lost:
+
+- the source listing of `av/{workId}/` says what was uploaded,
+- each asset's `media.json` says how far it got,
+- the manifest says which assets are already on a canvas.
+
+`GET /manifests/{id}/media` (`mediaRoutes.js`, pure logic in
+`unattachedMedia`) returns the difference. The dropzone calls it once on load
+and shows each result as a pending item marked "uploaded earlier": still
+transcoding, ready to add, or failed. An asset is "attached" when some
+canvas's painting body id contains `/av/{workId}/{assetId}/`.
+
+What leaving does now:
+
+| Left… | Result |
+|---|---|
+| mid-upload, within the app | The upload keeps going (it is an SPA) and shows up via recovery on return, once it has finished. |
+| mid-upload, by closing the tab | A `beforeunload` prompt fires, armed only while an upload is sending. If they leave anyway, the parts are aborted by the `AbortIncompleteMultipartUploads` lifecycle rule (3 days, both buckets). |
+| after the upload | Nothing is lost. Recovery brings the item back, and the poll has no deadline any more. |
+
+**Discard** (`DELETE /manifests/{id}/media/{assetId}`, behind a confirm) deletes
+the source file and everything under `av/{workId}/{assetId}/`. It refuses with
+409 while a canvas plays the asset. A job still running when its asset is
+discarded writes outputs afterwards. The transcode Lambda checks that the
+source still exists when the job completes (`sourceKey` is in the job's
+`UserMetadata`), and deletes the outputs if it does not.
+
+`media.json` carries the original `filename`, because the source key is a
+random id. The UI sends it as `x-amz-meta-filename`, URI-encoded because header
+values must be ASCII. The Lambda copies it in at submit time and carries it
+forward on completion.
+
+A source object with no `media.json` after 15 minutes
+(`STATUS_MISSING_AFTER_MS`) is reported as an error, not "processing". The
+Lambda writes that file within seconds of the upload, so its absence means that
+invocation died, and the item should not spin for ever.
+
+Not covered: a mid-upload **resume**. Amplify resumes a multipart upload only
+for the same key within an hour, and our keys are random per attempt.
 
 > **Not yet run against a live stack.** Verified by the unit tests, esbuild and
 > `sam validate --lint` only. The first deploy is where the job settings meet

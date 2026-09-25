@@ -58,6 +58,9 @@ test("video jobs: automated ABR HLS with separate audio, plus a poster", () => {
   assert.equal(video.AudioDescriptions, undefined);
   assert.equal(video.VideoDescription.Width, undefined);
   assert.equal(video.VideoDescription.CodecSettings.H264Settings.RateControlMode, "QVBR");
+  // Automated ABR requires this exact value; MediaConvert refuses the job at
+  // submit if it is missing or anything else.
+  assert.equal(video.VideoDescription.CodecSettings.H264Settings.QualityTuningLevel, "MULTI_PASS_HQ");
   assert.equal(video.OutputSettings.HlsSettings.AudioRenditionSets, audio.OutputSettings.HlsSettings.AudioGroupId);
   assert.equal(poster.Outputs[0].VideoDescription.CodecSettings.Codec, "FRAME_CAPTURE");
   assert.ok(settings.Inputs[0].VideoSelector);
@@ -150,4 +153,66 @@ test("publishing leaves av/ URLs alone", () => {
   const annotation = document.items[0].items[0].items[0];
   assert.equal(annotation.body.id, stream);
   assert.equal(annotation.target, `${BASE}/published/presentation/manifest/w/canvas/1`);
+});
+
+// --- Recovery ---------------------------------------------------------------
+
+const {attachedAssetIds, unattachedMedia, isAssetId, STATUS_MISSING_AFTER_MS} = require("../av");
+
+function avManifest(...assetIds) {
+  return {
+    items: assetIds.map((assetId, n) => ({
+      id: `${BASE}/working/presentation/manifest/w/canvas/${n}`,
+      items: [{items: [{body: {id: `${BASE}/av/w/${assetId}/index.m3u8`, type: "Video"}}]}],
+    })),
+  };
+}
+
+test("attachedAssetIds reads asset ids off painting bodies, for this work only", () => {
+  const manifest = avManifest("a1", "a2");
+  // An image canvas, and a body under ANOTHER work's av/ folder, are not ours.
+  manifest.items.push(
+    {items: [{items: [{body: {id: "https://images.example/iiif/2/x/full/max/0/default.jpg", type: "Image"}}]}]},
+    {items: [{items: [{body: {id: `${BASE}/av/other/zz/index.m3u8`}}]}]},
+  );
+  assert.deepEqual([...attachedAssetIds(manifest, "w")].sort(), ["a1", "a2"]);
+  assert.equal(attachedAssetIds({}, "w").size, 0);
+});
+
+test("unattachedMedia returns uploads not yet in the manifest, newest first", () => {
+  const now = Date.parse("2026-09-25T12:00:00Z");
+  const statuses = new Map([
+    ["ready1", {status: "ready", kind: "video", streamUrl: "x"}],
+    ["gone", {status: "ready", kind: "video"}],
+  ]);
+  const result = unattachedMedia({
+    workId: "w",
+    manifest: avManifest("attached"),
+    statuses,
+    now,
+    uploads: [
+      {key: "av/w/attached.mp4", lastModified: "2026-09-25T11:00:00Z"},
+      {key: "av/w/ready1.mov", lastModified: "2026-09-25T11:10:00Z"},
+      {key: "av/w/fresh.wav", lastModified: "2026-09-25T11:59:00Z"},
+      {key: "av/w/stale.mp4", lastModified: "2026-09-25T10:00:00Z"},
+      {key: "av/w/nested/skip.mp4", lastModified: "2026-09-25T11:00:00Z"},
+    ],
+  });
+  assert.deepEqual(result.map((item) => item.assetId), ["fresh", "ready1", "stale"]);
+  const [fresh, ready, stale] = result;
+  assert.equal(ready.media.status, "ready");
+  // No media.json yet: a fresh upload is simply still processing…
+  assert.deepEqual(fresh.media, {status: "processing", kind: "audio"});
+  // …but one that has had none for longer than the Lambda could plausibly take
+  // is reported, so it does not spin for ever.
+  assert.equal(stale.media.status, "error");
+  assert.ok(now - Date.parse("2026-09-25T10:00:00Z") > STATUS_MISSING_AFTER_MS);
+});
+
+test("isAssetId refuses anything that could escape its prefix", () => {
+  assert.equal(isAssetId("0b6f-4c2a"), true);
+  assert.equal(isAssetId("../x"), false);
+  assert.equal(isAssetId("a/b"), false);
+  assert.equal(isAssetId(""), false);
+  assert.equal(isAssetId(undefined), false);
 });

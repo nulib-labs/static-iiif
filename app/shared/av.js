@@ -123,7 +123,14 @@ function buildJobSettings({kind, inputUri, destination}) {
     VideoDescription: {
       CodecSettings: {
         Codec: "H_264",
-        H264Settings: {RateControlMode: "QVBR", SceneChangeDetect: "TRANSITION_DETECTION"},
+        // Automated ABR accepts exactly one QualityTuningLevel: MULTI_PASS_HQ.
+        // Omitting it and SINGLE_PASS_HQ are both refused at submit — the first
+        // two deployed video jobs found that out, one each.
+        H264Settings: {
+          RateControlMode: "QVBR",
+          QualityTuningLevel: "MULTI_PASS_HQ",
+          SceneChangeDetect: "TRANSITION_DETECTION",
+        },
       },
     },
   };
@@ -220,6 +227,76 @@ function summarizeCompletedJob(detail, {kind, bucket, baseUrl}) {
   return summary;
 }
 
+// --- Recovery ---------------------------------------------------------------
+//
+// A pending upload used to live only in the dropzone's React state, so leaving
+// the page orphaned it: the transcode still ran and was paid for, and nothing
+// could find it again. It turns out nothing needs to be remembered — the
+// source listing says what was uploaded, media.json says how far each got, and
+// the manifest says which are already attached. Recovery is the difference.
+
+// The assetIds this manifest's canvases already play, read off their painting
+// bodies ({base}/av/{workId}/{assetId}/…). A removed canvas drops out of this
+// set, so its media comes back as "ready to add" rather than vanishing — which
+// is what makes the discard route necessary.
+function attachedAssetIds(manifest, workId) {
+  const marker = `/${AV_PREFIX}/${workId}/`;
+  const found = new Set();
+  for (const canvas of Array.isArray(manifest?.items) ? manifest.items : []) {
+    for (const page of canvas?.items || []) {
+      for (const annotation of page?.items || []) {
+        const id = annotation?.body?.id;
+        const at = typeof id === "string" ? id.indexOf(marker) : -1;
+        if (at === -1) continue;
+        const assetId = id.slice(at + marker.length).split("/")[0];
+        if (assetId) found.add(assetId);
+      }
+    }
+  }
+  return found;
+}
+
+// How long an upload may sit with no media.json before it is reported as
+// stuck. The Lambda writes "processing" within seconds of the upload
+// completing; a quarter of an hour without it means that invocation died.
+const STATUS_MISSING_AFTER_MS = 15 * 60 * 1000;
+
+// `uploads` is the source listing, [{key, lastModified}]; `statusFor(assetId)`
+// is that asset's media.json, or null. Only assets NOT attached are returned,
+// newest first, each with a status the UI can render directly.
+function unattachedMedia({uploads, workId, manifest, statuses, now = Date.now()}) {
+  const attached = attachedAssetIds(manifest, workId);
+  const results = [];
+  for (const upload of uploads || []) {
+    const parsed = parseSourceKey(upload?.key);
+    if (!parsed || parsed.workId !== workId || attached.has(parsed.assetId)) continue;
+    const uploadedAt = upload.lastModified ? new Date(upload.lastModified).getTime() : null;
+    let status = statuses?.get(parsed.assetId) || null;
+    if (!status) {
+      const stuck = uploadedAt !== null && now - uploadedAt > STATUS_MISSING_AFTER_MS;
+      status = stuck
+        ? {status: "error", kind: parsed.kind, error: "Transcoding never started — discard and upload again"}
+        : {status: "processing", kind: parsed.kind};
+    }
+    results.push({
+      assetId: parsed.assetId,
+      key: upload.key,
+      kind: status.kind || parsed.kind,
+      uploadedAt: uploadedAt ? new Date(uploadedAt).toISOString() : null,
+      media: status,
+    });
+  }
+  return results.sort((a, b) => (b.uploadedAt || "").localeCompare(a.uploadedAt || ""));
+}
+
+// Assets are named by the UI's crypto.randomUUID(); nothing else is a valid
+// discard target, and the pattern keeps a path segment out of an S3 prefix.
+const ASSET_ID_PATTERN = /^[A-Za-z0-9-]+$/;
+
+function isAssetId(value) {
+  return typeof value === "string" && ASSET_ID_PATTERN.test(value);
+}
+
 module.exports = {
   AV_PREFIX,
   HLS_FORMAT,
@@ -230,4 +307,8 @@ module.exports = {
   buildJobSettings,
   s3UriToPublicUrl,
   summarizeCompletedJob,
+  attachedAssetIds,
+  unattachedMedia,
+  isAssetId,
+  STATUS_MISSING_AFTER_MS,
 };

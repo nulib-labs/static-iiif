@@ -38,6 +38,7 @@ const {
   canViewWork,
 } = require("../../../shared/access");
 const {handleUsersRoute} = require("./users");
+const {handleMediaRoute} = require("./mediaRoutes");
 const {
   handleCollectionsRoute,
   handleManifestCollectionRoute,
@@ -465,6 +466,17 @@ exports.handler = async (event) => {
       principal,
       readManifest,
       writeManifest,
+    });
+  }
+
+  if ((segments.length === 3 || segments.length === 4) && segments[2] === "media") {
+    return handleMediaRoute({
+      method,
+      identifier,
+      assetId: segments[3] === undefined ? undefined : decodeURIComponent(segments[3]),
+      principal,
+      readManifest,
+      canEdit: (who, manifest) => canEditWork(who, workCollections(manifest)),
     });
   }
 
