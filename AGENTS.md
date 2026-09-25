@@ -19,11 +19,12 @@ internal/import-status/{workId}.json                       ← operational, not 
 internal/publish/{slug}/status.json
 internal/publish/{slug}/{runId}/{plan,batches/N}.json
 image/{workId}/{n}.tif                                     ← never duplicated by publishing
+av/{workId}/{assetId}/{index.m3u8,…,media.json}            ← likewise; see Audio and video
 ```
 
 Because each space describes its own URLs, **publishing is a URL-rewriting transform, not a copy** (`app/shared/publish.js`). Both the draft and the published twin are retrievable at their own `id`. The cost is that S3 ETags are useless for "has this changed?", which is why content hashes are computed and recorded explicitly.
 
-`IIIFBucketPolicy` grants `s3:GetObject` on `working/*` and `published/*` only, to the **CloudFront service principal** rather than to `*`, conditioned on the distribution's `AWS:SourceArn`. The bucket itself blocks all public access. **Drafts stay anonymously readable on purpose** — Clover fetches manifests unauthenticated, and "published" means "in the consuming site's feed", not "visible" — but they are readable *through `IIIFDistribution`*, not directly from S3, so the cache and the CORS response headers cannot be bypassed. `internal/*` is excluded, and `image/*` need not be readable at all because serverless-iiif reads the TIFFs through its own role.
+`IIIFBucketPolicy` grants `s3:GetObject` on `working/*`, `published/*` and `av/*` only, to the **CloudFront service principal** rather than to `*`, conditioned on the distribution's `AWS:SourceArn`. The bucket itself blocks all public access. **Drafts stay anonymously readable on purpose** — Clover fetches manifests unauthenticated, and "published" means "in the consuming site's feed", not "visible" — but they are readable *through `IIIFDistribution`*, not directly from S3, so the cache and the CORS response headers cannot be bypassed. `internal/*` is excluded, and `image/*` need not be readable at all because serverless-iiif reads the TIFFs through its own role.
 
 ## CDN
 
@@ -184,8 +185,8 @@ Adding a section means one entry in `SECTIONS`, its `match`, and one `<Route>`.
 `apiFetch` and `manifestApiUrl`. Importing it is what configures Amplify, so
 every `apiFetch` caller is configured by construction.
 
-Future: a prefix for audio/video assets (A/V) is anticipated but out of scope for
-now — don't build it until it's explicitly requested.
+`AssetDropzone` also takes audio and video, which go to the source bucket's
+`av/` prefix instead — see **Audio and video** below.
 
 ## Search index
 
@@ -268,6 +269,7 @@ app/
         importRoutes.js    #   collection import: preview, start a run, read its progress
       publish/             # Lambda: PublishStateMachine's task worker
       import/              # Lambda: ImportStateMachine's task worker
+      av-transcode/        # Lambda: submits MediaConvert jobs, records their outcome
   shared/                  # SDK-free unless noted; see Testing Guidelines
     space.js               # working/published spaces and their key + URL prefixes
     collection.js          # IIIF Collection documents, slugs, partOf, reconciliation
@@ -276,6 +278,7 @@ app/
     access.js              # every authorization decision
     language.js            # IIIF language maps
     sourceFetch.js         # fetching someone else's IIIF doc, and dropping A/V
+    av.js                  # A/V key layout, MediaConvert job settings, media.json
     manifest.js            # manifest keys/templates/listing — loads the SDK
     opensearch.js          # signed HTTP to the domain — loads the SDK
     assetCopy.js           # copy one canvas's image onto our Image API — loads the SDK
@@ -625,6 +628,10 @@ the in-memory copy would hash something that was never stored.
 
 ### Audio and video are dropped
 
+> **On import only.** A/V uploaded through the UI is supported — see **Audio
+> and video** below. Imports still drop it; `imageCanvasesOnly` is where to
+> start when they should instead copy it into `av/`.
+
 `imageCanvasesOnly` (`app/shared/sourceFetch.js`) filters out every canvas whose
 painting body is not `type: "Image"`, **before** the manifest is written, so a
 dropped canvas never reaches S3. Passing them through was the alternative and was
@@ -654,6 +661,83 @@ re-imported, and this filter is where to start.
 - `import` is a **reserved collection slug** (`sanitizeCollectionSlug`, mirrored
   in `ui/src/lib/collectionSlug.js`), because `POST /collections/import` would
   otherwise be ambiguous with a collection legitimately named that.
+
+## Audio and video
+
+A single audio or video file uploaded on a work's page becomes one canvas. It
+follows the same steps as an image, with a different worker in the middle:
+
+```
+UI ──PUT──▶ {source}/av/{workId}/{assetId}.{ext}
+              │ S3 ObjectCreated (prefix av/)
+              ▼
+        AVTranscodeFunction ──writes──▶ media.json {status: "processing"}
+              │ CreateJob (UserMetadata: stack, workId, assetId, kind)
+              ▼
+        MediaConvert ──writes──▶ {iiif}/av/{workId}/{assetId}/index.m3u8, segments, poster
+              │ EventBridge: Job State Change COMPLETE | ERROR
+              ▼
+        AVTranscodeFunction ──writes──▶ media.json {status: "ready", streamUrl, duration, …}
+                                                          ▲
+UI polls media.json through IIIFDistribution ─────────────┘, then builds the canvas
+```
+
+**MediaConvert, not ffmpeg in a Lambda.** A long video does not fit in 15
+minutes or 10GB of `/tmp`. Video is HLS with **Automated ABR**: MediaConvert
+picks the rendition ladder from the source and never upscales, which is why
+the video output has no width, height or bitrate, and why audio sits in its own
+output joined by `AudioGroupId`. It also captures a frame at 3s (at 0s for a
+clip shorter than that) as the poster. Audio is a single audio-only HLS output,
+so both kinds share one code path and one body `format`.
+
+**No new CloudFront distribution.** CloudFront's RTMP "streaming distributions"
+were retired in 2020, and HLS is ordinary static files. `av/*` rides
+`IIIFDistribution`'s default (cached) behaviour, which already has the CORS
+headers hls.js needs; the only change was adding `av/*` to the bucket policy.
+Segments are immutable. `media.json` is written `Cache-Control: no-cache`, so
+`CachingOptimized` holds it for its 1s MinTTL and no longer.
+
+**`av/` is outside both spaces on purpose.** Publishing rewrites only
+`{base}/working/…`, so a published canvas points at the same stream as its
+draft, just as it does for a TIFF, and publishing never copies media. There is a
+test for this in `app/shared/__tests__/av.test.js`.
+
+**The EventBridge rule filters on `userMetadata.stack`.** Every personal stack
+shares the account's default bus, so without that filter each stack's function
+would receive every other stack's job completions and write into the wrong
+bucket's status keys.
+
+**`media.json` is the whole interface**, like `info.json` for an image. The
+Lambda writes `processing` *before* it calls CreateJob, so a completion event
+can never be overwritten by a late "processing". The Lambda takes duration,
+size and output paths from the COMPLETE event rather than guessing filenames.
+For a frame capture, `outputFilePaths` names the last frame, which is the
+poster. The UI derives the documents base from `manifest.id` because
+`VITE_IIIF_BASE_URL` is the Image API, not the documents host.
+
+Canvas shape: a `Video` or `Sound` painting body with
+`format: application/vnd.apple.mpegurl`, `duration` on both canvas and body,
+`width`/`height` for video only, and the poster as `canvas.thumbnail`. Clover
+recognizes HLS by that format or a `.m3u8` extension and lazy-loads hls.js.
+
+Known gaps, all deliberate for a first pass:
+
+- **Imports still drop A/V** (`imageCanvasesOnly`).
+- **No captions or transcripts.** WebVTT as a `supplementing` annotation is
+  the natural next step.
+- **Works-list thumbnails are image-service ids only** (`canvasThumbnailService`),
+  so a video-only work shows none there. The collection thumbnail does fall back
+  to the poster, via `manifestThumbnail`.
+- **Pending uploads live in the component.** Leaving the page mid-transcode
+  loses the pending item; the job still finishes and its output sits orphaned
+  under `av/` until the work is deleted.
+- **Deleting a work clears `av/{workId}/`** in both buckets. Removing a single
+  canvas does not delete its media, which is the same as images.
+
+> **Not yet run against a live stack.** Verified by the unit tests, esbuild and
+> `sam validate --lint` only. The first deploy is where the job settings meet
+> MediaConvert's validator, and where the managed runtime's
+> `@aws-sdk/client-mediaconvert` is first resolved.
 
 ## What an imported work keeps, and what it does not
 
@@ -1115,7 +1199,7 @@ That is the reason for the split in `app/shared/`, and it is worth keeping delib
 
 | SDK-free, unit-tested | Loads the SDK, not testable from the root |
 |---|---|
-| `space.js`, `collection.js`, `publish.js`, `search.js`, `access.js`, `language.js`, `sourceFetch.js` | `manifest.js`, `opensearch.js`, `assetCopy.js` |
+| `space.js`, `collection.js`, `publish.js`, `search.js`, `access.js`, `language.js`, `sourceFetch.js`, `av.js` | `manifest.js`, `opensearch.js`, `assetCopy.js` |
 
 Keep `collection.js` free of any `manifest.js` import — `manifest.js` loads the SDK, and the reverse direction would also be a require cycle. `node:crypto` is a core module, so hashing in `publish.js` is fine.
 

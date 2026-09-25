@@ -21,6 +21,7 @@ const {
 } = require("../../../shared/collection");
 const {jsonResponse, parseBody, isNotFound} = require("./http");
 const {INTERNAL_PREFIX} = require("../../../shared/space");
+const {AV_PREFIX} = require("../../../shared/av");
 const {readManifest, writeManifest} = require("./store");
 const {
   upsertQuietly,
@@ -103,7 +104,14 @@ async function deleteByPrefix(targetBucket, prefix) {
 
 async function deleteManifestAssets(identifier, manifest) {
   const assetPrefix = `image/${identifier}/`;
-  await Promise.all([deleteByPrefix(sourceBucket, assetPrefix), deleteByPrefix(bucket, assetPrefix)]);
+  // Audio/video: the upload in source, and the renditions + media.json in iiif.
+  const avPrefix = `${AV_PREFIX}/${identifier}/`;
+  await Promise.all([
+    deleteByPrefix(sourceBucket, assetPrefix),
+    deleteByPrefix(bucket, assetPrefix),
+    deleteByPrefix(sourceBucket, avPrefix),
+    deleteByPrefix(bucket, avPrefix),
+  ]);
 
   const items = Array.isArray(manifest?.items) ? manifest.items : [];
   const extraSourceKeys = [];

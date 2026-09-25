@@ -1,8 +1,16 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import {uploadData} from "aws-amplify/storage";
-import {ImageIcon, TrashIcon, UploadIcon} from "@radix-ui/react-icons";
+import {ImageIcon, SpeakerLoudIcon, TrashIcon, UploadIcon, VideoIcon} from "@radix-ui/react-icons";
 import {Box, Button, Callout, Em, Flex, IconButton, Progress, Text, TextField} from "@radix-ui/themes";
-import {assetLabelFromKey, buildCanvasResource, buildInfoUrlFromKey, buildThumbnailUrlFromInfo} from "../lib/canvasAssets";
+import {
+  assetLabelFromKey,
+  buildAvCanvasResource,
+  buildCanvasResource,
+  buildInfoUrlFromKey,
+  buildMediaStatusUrl,
+  buildThumbnailUrlFromInfo,
+  mediaKindFromFile,
+} from "../lib/canvasAssets";
 import "./AssetDropzone.css";
 
 const SOURCE_BUCKET = import.meta.env.VITE_SOURCE_BUCKET || "";
@@ -21,17 +29,27 @@ const SOURCE_BUCKET_TARGET = {bucketName: SOURCE_BUCKET, region: STORAGE_REGION}
 const INFO_POLL_INTERVAL_MS = 1500;
 const INFO_POLL_ATTEMPTS = 14; // ~20s of retrying
 
+// Audio/video goes through MediaConvert, which takes minutes rather than
+// seconds — roughly real time or faster, plus a queue wait — so it is polled
+// far less often and for far longer. media.json is written no-cache, so a poll
+// sees a change within CloudFront's 1s floor.
+const MEDIA_POLL_INTERVAL_MS = 5000;
+const MEDIA_POLL_DEADLINE_MS = 45 * 60 * 1000;
+
+const FALLBACK_ICONS = {image: ImageIcon, video: VideoIcon, audio: SpeakerLoudIcon};
+
 // Most browsers can't decode TIFF (the usual source format for this pipeline) via <img>,
 // so the local blob preview silently fails to render for it — fall back to a generic icon
 // rather than leaving a blank/broken image in its place. `key` on the call site remounts
 // this (resetting `failed`) whenever the source swaps from the local blob to the real
 // IIIF thumbnail once processing finishes.
-function PendingPreview({src}) {
+function PendingPreview({src, kind}) {
   const [failed, setFailed] = useState(false);
   if (failed || !src) {
+    const Icon = FALLBACK_ICONS[kind] || ImageIcon;
     return (
       <Box className="asset-dropzone-preview asset-dropzone-preview--fallback">
-        <ImageIcon className="asset-dropzone-icon" />
+        <Icon className="asset-dropzone-icon" />
       </Box>
     );
   }
@@ -56,6 +74,27 @@ async function waitForImageInfo(key) {
     await new Promise((resolve) => setTimeout(resolve, INFO_POLL_INTERVAL_MS));
   }
   throw new Error("Image is still processing — try again in a moment");
+}
+
+// A 404 is expected for the first moment after upload, before the Lambda has
+// written "processing"; anything but ready or error keeps polling.
+async function waitForMediaStatus(statusUrl) {
+  if (!statusUrl) {
+    throw new Error("Unable to locate this work's media — reload and try again");
+  }
+  const deadline = Date.now() + MEDIA_POLL_DEADLINE_MS;
+  while (Date.now() < deadline) {
+    const response = await fetch(statusUrl, {cache: "no-store"}).catch(() => null);
+    if (response?.ok) {
+      const status = await response.json().catch(() => null);
+      if (status?.status === "ready") return status;
+      if (status?.status === "error") {
+        throw new Error(status.error || "Transcoding failed");
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, MEDIA_POLL_INTERVAL_MS));
+  }
+  throw new Error("Still transcoding after 45 minutes — check back later");
 }
 
 export default function AssetDropzone({workId, manifest, disabled, disabledReason, onAttach}) {
@@ -92,10 +131,24 @@ export default function AssetDropzone({workId, manifest, disabled, disabledReaso
     [updatePending],
   );
 
+  const resolveMediaStatus = useCallback(
+    async (tempId, key) => {
+      try {
+        const media = await waitForMediaStatus(buildMediaStatusUrl(manifest, key));
+        updatePending(tempId, {status: "ready", media});
+      } catch (err) {
+        updatePending(tempId, {status: "error", errorMessage: err.message || "Unable to process media"});
+      }
+    },
+    [manifest, updatePending],
+  );
+
   const uploadFile = useCallback(
-    async (tempId, file) => {
+    async (tempId, file, kind) => {
       const ext = extensionFromFilename(file.name);
-      const key = `image/${workId}/${tempId}${ext}`;
+      // image/ feeds the iiif-image Lambda, av/ the av-transcode one.
+      const prefix = kind === "image" ? "image" : "av";
+      const key = `${prefix}/${workId}/${tempId}${ext}`;
       try {
         const task = uploadData({
           path: key,
@@ -110,31 +163,41 @@ export default function AssetDropzone({workId, manifest, disabled, disabledReaso
         });
         await task.result;
         updatePending(tempId, {status: "processing", key, progress: 100});
-        resolveImageInfo(tempId, key);
+        if (kind === "image") {
+          resolveImageInfo(tempId, key);
+        } else {
+          resolveMediaStatus(tempId, key);
+        }
       } catch (err) {
         updatePending(tempId, {status: "error", errorMessage: err.message || "Upload failed"});
       }
     },
-    [workId, updatePending, resolveImageInfo],
+    [workId, updatePending, resolveImageInfo, resolveMediaStatus],
   );
 
   const handleFiles = useCallback(
     (files) => {
-      const images = files.filter((file) => file.type.startsWith("image/"));
-      const items = images.map((file) => ({
-        tempId: crypto.randomUUID(),
-        file,
-        key: null,
-        label: assetLabelFromKey(file.name),
-        status: "uploading",
-        progress: 0,
-        previewUrl: URL.createObjectURL(file),
-        imageInfo: null,
-        errorMessage: null,
-      }));
+      const items = files
+        .map((file) => ({file, kind: mediaKindFromFile(file)}))
+        .filter((entry) => entry.kind)
+        .map(({file, kind}) => ({
+          tempId: crypto.randomUUID(),
+          file,
+          kind,
+          key: null,
+          label: assetLabelFromKey(file.name),
+          status: "uploading",
+          progress: 0,
+          // Only an image can be previewed from the local file; A/V shows an
+          // icon until the transcode hands back a poster.
+          previewUrl: kind === "image" ? URL.createObjectURL(file) : null,
+          imageInfo: null,
+          media: null,
+          errorMessage: null,
+        }));
       if (items.length === 0) return;
       setPending((prev) => [...prev, ...items]);
-      items.forEach((item) => uploadFile(item.tempId, item.file));
+      items.forEach((item) => uploadFile(item.tempId, item.file, item.kind));
     },
     [uploadFile],
   );
@@ -185,7 +248,11 @@ export default function AssetDropzone({workId, manifest, disabled, disabledReaso
     setAttaching(true);
     setAttachError(null);
     try {
-      const canvases = ready.map((item) => buildCanvasResource(manifest, item.imageInfo, item.label));
+      const canvases = ready.map((item) =>
+        item.kind === "image"
+          ? buildCanvasResource(manifest, item.imageInfo, item.label)
+          : buildAvCanvasResource(manifest, item.media, item.label),
+      );
       await onAttach(canvases);
       const readyIds = new Set(ready.map((item) => item.tempId));
       setPending((prev) => {
@@ -241,7 +308,7 @@ export default function AssetDropzone({workId, manifest, disabled, disabledReaso
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,audio/*,video/*"
           multiple
           className="asset-dropzone-input"
           onChange={handleFileInputChange}
@@ -253,11 +320,13 @@ export default function AssetDropzone({workId, manifest, disabled, disabledReaso
       {pending.length > 0 && (
         <Flex direction="column" gap="2" className="asset-dropzone-pending">
           {pending.map((item) => {
-            const thumbnailUrl = item.imageInfo ? buildThumbnailUrlFromInfo(item.imageInfo) : null;
+            const thumbnailUrl = item.imageInfo
+              ? buildThumbnailUrlFromInfo(item.imageInfo)
+              : item.media?.poster?.url || null;
             const previewSrc = thumbnailUrl || item.previewUrl;
             return (
               <Flex key={item.tempId} align="center" gap="3" className="asset-dropzone-pending-item">
-                <PendingPreview key={previewSrc} src={previewSrc} />
+                <PendingPreview key={previewSrc || item.kind} src={previewSrc} kind={item.kind} />
                 <Box className="asset-dropzone-pending-info">
                   <Text as="p" size="1" color="gray" className="asset-dropzone-filename">{item.file.name}</Text>
                   {item.status === "uploading" && <Progress value={item.progress} max={100} size="1" />}
@@ -272,7 +341,9 @@ export default function AssetDropzone({workId, manifest, disabled, disabledReaso
                   {item.status === "processing" && (
                     <Flex align="center" gap="2" mt="1">
                       <Progress size="1" duration="2s" className="asset-dropzone-processing-bar" />
-                      <Text size="1" color="gray" className="asset-dropzone-processing-label">Processing image…</Text>
+                      <Text size="1" color="gray" className="asset-dropzone-processing-label">
+                        {item.kind === "image" ? "Processing image…" : `Transcoding ${item.kind}… this can take a few minutes`}
+                      </Text>
                     </Flex>
                   )}
                   {item.status === "error" && (
